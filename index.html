@@ -1310,31 +1310,42 @@
     }
 
     async function insertPedidoAdaptive(payload){
-      let body={...payload};
-      const optionalCandidates=["idioma","mesa","mesa_id","local_entrega","telefone_pagamento","referencia_pagamento","telefone","codigo_pedido","status_pagamento"];
-      for(let attempt=0;attempt<optionalCandidates.length+2;attempt++){
-        const {data,error}=await db.from("pedidos").insert(body).select("*").limit(1);
-        if(!error) return {data,error:null};
-        const field=parseUnknownColumn(error.message);
-        if(field && Object.prototype.hasOwnProperty.call(body,field)){
-          delete body[field];
-          continue;
-        }
-        const missing=parseNotNullColumn(error.message);
-        if(missing && !Object.prototype.hasOwnProperty.call(body,missing)){
-          const sourceMap={
-            cliente_nome:"nome_cliente",nome:"nome_cliente",customer_name:"nome_cliente",
-            customer_phone:"telefone",phone:"telefone",endereco:"local_entrega",local:"local_entrega",
-            pagamento:"metodo_pagamento",payment_method:"metodo_pagamento",amount:"total",valor_total:"total",
-            order_status:"status",items:"itens",pedido_codigo:"codigo_pedido",table_id:"mesa_id",mesa_id:"mesa_id"
-          };
-          if(sourceMap[missing] && payload[sourceMap[missing]]!==undefined) body[missing]=payload[sourceMap[missing]];
-          else return {data:null,error};
-          continue;
-        }
-        return {data:null,error};
+      const key="prodeba_idempotency_"+String(payload.restaurante_id||"restaurant");
+      let idempotencyToken=sessionStorage.getItem(key);
+      if(!idempotencyToken){
+        idempotencyToken=(crypto.randomUUID?crypto.randomUUID():("prb_"+Date.now()+"_"+Math.random().toString(36).slice(2,12)));
+        sessionStorage.setItem(key,idempotencyToken);
       }
-      return {data:null,error:new Error(tr("adaptOrderError"))};
+      const methodMap={mpesa:"mpesa",emola:"emola",mkesh:"mkesh",bank:"transferência bancária",card:"visa/mastercard",delivery:"Dinheiro"};
+      const paymentMethod=methodMap[state.pagamento]||state.pagamento;
+      const customerPhone=String(payload.telefone||payload.telefone_pagamento||"").trim();
+      const location=String(payload.local_entrega||"").trim() || (payload.mesa ? "Mesa "+payload.mesa : "Retirada no restaurante");
+      const request={
+        strict_mesa_id: payload.mesa_id || null,
+        itens:{
+          pedido:{
+            restaurante_id:payload.restaurante_id,
+            nome_cliente:payload.nome_cliente,
+            telefone_pagamento:customerPhone,
+            local_entrega:location,
+            referencia_pagamento:payload.referencia_pagamento||null
+          },
+          itens:(payload.itens||[]).map(item=>({produto_id:item.produto_id,quantidade:Number(item.quantidade)}))
+        },
+        pagamento:{
+          pagamentos:[{
+            metodo:paymentMethod,
+            valor:Number(payload.total||0),
+            referencia:payload.referencia_pagamento||null
+          }]
+        },
+        idempotency_token:idempotencyToken
+      };
+      const {data,error}=await db.rpc("criar_pedido_transacional",request);
+      if(error) return {data:null,error};
+      sessionStorage.removeItem(key);
+      const order=Array.isArray(data)?data[0]:data;
+      return {data:order?[order]:[],error:null};
     }
 
     function parseUnknownColumn(message){
@@ -1355,26 +1366,23 @@
 
     async function fetchOrderByCode(code,showLoading=false){
       if(showLoading) document.getElementById("trackingResult").innerHTML=`<div class="loading">${escapeHTML(tr("queryLoading"))}</div>`;
-      let response=await db.from("pedidos").select("*").eq("codigo",code).maybeSingle();
-      if(response.error){
-        response=await db.from("pedidos").select("*").eq("id",code).maybeSingle();
+      let response=await db.rpc("rastrear_pedido",{p_codigo:code});
+      if(response.error || !response.data){
+        const fallback=await db.from("pedidos").select("*").eq("id",code).maybeSingle();
+        if(fallback.error || !fallback.data){showTrackingError(tr("notFound"));return null;}
+        response={data:fallback.data,error:null};
       }
-      if(response.error || !response.data){showTrackingError(tr("notFound"));return null;}
-      state.pedidoAtual=response.data;
-      showTrackingResult(response.data);
-      return response.data;
+      const order=Array.isArray(response.data)?response.data[0]:response.data;
+      if(!order){showTrackingError(tr("notFound"));return null;}
+      state.pedidoAtual={...order,codigo_pedido:pick(order,["codigo","codigo_pedido"],code)};
+      showTrackingResult(state.pedidoAtual);
+      return state.pedidoAtual;
     }
 
     function showTrackingError(message){document.getElementById("trackingResult").innerHTML=`<div class="notice error">${escapeHTML(message)}</div>`;}
 
     function orderStatus(row){return norm(pick(row,["status","estado","order_status"],"pendente"))||"pendente";}
-    function paymentStatus(row){
-      const explicit=norm(pick(row,["status_pagamento","estado_pagamento","payment_status"],""));
-      if(explicit) return explicit;
-      const order=orderStatus(row);
-      if(["pago","preparando","pronto","entregue"].includes(order)) return "confirmado";
-      return order==="na_entrega" ? "na_entrega" : "pendente";
-    }
+    function paymentStatus(row){return norm(pick(row,["status_pagamento","estado_pagamento","payment_status"],"pendente"))||"pendente";}
 
     function showTrackingResult(row){
       const order=orderStatus(row);
@@ -1450,7 +1458,27 @@
         setNotice("adminNotice",`${escapeHTML(tr("reportError"))}: ${escapeHTML(response.error.message)}`,"error");
         return;
       }
-      state.reportRows=response.data||[];
+      const orders=response.data||[];
+      const orderIds=orders.map(o=>o.id).filter(Boolean);
+      let payments=[];
+      if(orderIds.length){
+        const paymentResponse=await db.from("pagamentos").select("pedido_id,valor,status").in("pedido_id",orderIds);
+        if(paymentResponse.error){
+          setNotice("adminNotice",tr("reportError")+": "+escapeHTML(paymentResponse.error.message),"error");
+          return;
+        }
+        payments=paymentResponse.data||[];
+      }
+      const byOrder=new Map();
+      payments.forEach(p=>{const id=String(p.pedido_id);if(!byOrder.has(id))byOrder.set(id,[]);byOrder.get(id).push(p);});
+      state.reportRows=orders.map(o=>{
+        const ps=byOrder.get(String(o.id))||[];
+        if(!ps.length) return {...o,status_pagamento:"pendente"};
+        const sum=ps.reduce((n,p)=>n+Number(p.valor||0),0);
+        const total=Number(o.total||0);
+        const status=Math.abs(sum-total)>0.01?"em_verificacao":ps.every(p=>norm(p.status)==="confirmado")?"confirmado":"pendente";
+        return {...o,status_pagamento:status};
+      });
       renderReport(state.reportRows);
     }
 
@@ -1928,11 +1956,12 @@
     main.innerHTML = '<div class="prodeba-muted">A carregar dashboard…</div>';
     try {
       const rid = await resolveRestaurant();
-      const [orders, expenses] = await Promise.all([
+      const [orders, expenses, payments] = await Promise.all([
         run(SB.from('pedidos').select('*').eq('restaurante_id', rid).order('created_at', { ascending: false }).limit(500)),
-        run(SB.from('despesas').select('*').eq('restaurante_id', rid).order('created_at', { ascending: false }).limit(500)).catch(() => [])
+        run(SB.from('despesas').select('*').eq('restaurante_id', rid).order('created_at', { ascending: false }).limit(500)).catch(() => []),
+        run(SB.from('pagamentos').select('*').eq('restaurante_id', rid).limit(2000)).catch(() => [])
       ]);
-      const totalSales = (orders || []).filter(o => CFG.statusesPaid.includes(field(o,['status']))).reduce((s,o) => s + Number(field(o,['total'],0)),0);
+      const totalSales = (payments || []).filter(p => norm(field(p,['status'])) === 'confirmado').reduce((s,p) => s + Number(field(p,['valor'],0)),0);
       const totalExpenses = (expenses || []).reduce((s,o) => s + Number(field(o,['valor','total','montante'],0)),0);
       const pending = (orders || []).filter(o => ['pendente','aguardando_pagamento'].includes(field(o,['status']))).length;
       main.innerHTML = `<div class="prodeba-grid">
@@ -2132,14 +2161,17 @@
     main.innerHTML='<div class="prodeba-muted">A carregar financeiro…</div>';
     try {
       const rid=await resolveRestaurant();
-      const [orders,expenses]=await Promise.all([
+      const [orders,expenses,payments]=await Promise.all([
         run(SB.from('pedidos').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(1000)),
-        run(SB.from('despesas').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(1000)).catch(()=>[])
+        run(SB.from('despesas').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(1000)).catch(()=>[]),
+        run(SB.from('pagamentos').select('*').eq('restaurante_id',rid).limit(3000)).catch(()=>[])
       ]);
       expenseRows=expenses||[];
-      const sales= (orders||[]).filter(o=>CFG.statusesPaid.includes(field(o,['status']))).reduce((s,o)=>s+Number(field(o,['total'],0)),0);
+      const confirmedPayments=(payments||[]).filter(p=>norm(field(p,['status']))==='confirmado');
+      const sales=confirmedPayments.reduce((s,p)=>s+Number(field(p,['valor'],0)),0);
+      const paidOrderIds=new Set(confirmedPayments.map(p=>String(field(p,['pedido_id'],''))));
       const exp=(expenseRows||[]).reduce((s,o)=>s+Number(field(o,['valor','total','montante'],0)),0);
-      main.innerHTML=`<div class="prodeba-grid"><div class="prodeba-card"><div class="label">Vendas</div><div class="value">${money(sales)}</div></div><div class="prodeba-card"><div class="label">Despesas</div><div class="value">${money(exp)}</div></div><div class="prodeba-card"><div class="label">Saldo</div><div class="value">${money(sales-exp)}</div></div><div class="prodeba-card"><div class="label">Pedidos pagos</div><div class="value">${orders.filter(o=>CFG.statusesPaid.includes(field(o,['status']))).length}</div></div></div><br>
+      main.innerHTML=`<div class="prodeba-grid"><div class="prodeba-card"><div class="label">Vendas confirmadas</div><div class="value">${money(sales)}</div></div><div class="prodeba-card"><div class="label">Despesas</div><div class="value">${money(exp)}</div></div><div class="prodeba-card"><div class="label">Saldo</div><div class="value">${money(sales-exp)}</div></div><div class="prodeba-card"><div class="label">Pedidos com pagamentos confirmados</div><div class="value">${paidOrderIds.size}</div></div></div><br>
         <div class="prodeba-card"><h3>Registar despesa</h3><form id="prodeba-exp-form" class="prodeba-form"><div><label>Descrição<input class="prodeba-input" id="exp-desc" required></label></div><div><label>Valor (MT)<input class="prodeba-input" id="exp-valor" type="number" step="0.01" min="0" required></label></div><div><button class="prodeba-btn" type="submit">Guardar despesa</button></div></form></div><br>
         <div class="prodeba-table-wrap"><table class="prodeba-table"><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>${expenseRows.map(x=>`<tr><td>${esc(dateTime(field(x,['created_at','data'])))}</td><td>${esc(field(x,['descricao','description','nome'],'—'))}</td><td>${money(field(x,['valor','total','montante'],0))}</td></tr>`).join('')||'<tr><td colspan="3" class="prodeba-empty">Sem despesas registadas.</td></tr>'}</tbody></table></div>`;
       $('#prodeba-exp-form').onsubmit=async e=>{e.preventDefault();await addExpense($('#exp-desc').value.trim(),Number($('#exp-valor').value||0),rid);};
