@@ -1690,12 +1690,20 @@
   }
 
   async function resolveRestaurant() {
-    if (RESTAURANT_ID) return RESTAURANT_ID;
-    const data = await run(SB.from('restaurantes').select('*').eq('ativo', true).limit(1));
-    const row = Array.isArray(data) ? data[0] : data;
-    RESTAURANT_ID = row?.id || null;
-    if (RESTAURANT_ID) localStorage.setItem(CFG.storage.restaurant, RESTAURANT_ID);
-    return RESTAURANT_ID;
+    // No painel autenticado, nunca confiar no ID guardado no navegador:
+    // o restaurante tem de pertencer ao utilizador autenticado.
+    if (currentSession?.user?.id) {
+      const data = await run(SB.from('restaurantes').select('*')
+        .eq('owner_id', currentSession.user.id)
+        .order('created_at', { ascending: true }).limit(1));
+      const row = Array.isArray(data) ? data[0] : data;
+      RESTAURANT_ID = row?.id || null;
+      if (RESTAURANT_ID) localStorage.setItem(CFG.storage.restaurant, RESTAURANT_ID);
+      return RESTAURANT_ID;
+    }
+    // Contexto público do menu/QR: mantém o restaurante definido para o menu.
+    if (CFG.restaurantId) return CFG.restaurantId;
+    return RESTAURANT_ID || null;
   }
 
   async function resolveQrContext() {
@@ -1863,10 +1871,33 @@
       currentSession = data?.session || null;
     }
 
+    const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const recoveryRequested = new URLSearchParams(location.search).get('prodeba_recovery') === '1' || hashParams.get('type') === 'recovery';
+    if (recoveryRequested) {
+      const { data } = await SB.auth.getSession();
+      currentSession = data?.session || currentSession;
+      if (currentSession) {
+        main.innerHTML = passwordUpdateHtml();
+        bindPasswordUpdate();
+      } else {
+        main.innerHTML = recoveryHtml('O link expirou ou não foi validado. Solicite um novo email de recuperação.');
+        bindRecovery();
+      }
+      return;
+    }
+
     if (!currentSession && activeTab !== 'accounts') {
       main.innerHTML = loginHtml();
       bindLogin();
       return;
+    }
+
+    if (currentSession && activeTab !== 'accounts') {
+      const ownedRestaurant = await resolveRestaurant();
+      if (!ownedRestaurant) {
+        await renderOnboarding(main);
+        return;
+      }
     }
 
     if (activeTab === 'dashboard') return renderDashboard(main);
@@ -1880,14 +1911,88 @@
   function loginHtml(message = '') {
     return `<div class="prodeba-login prodeba-card">
       <h3>Entrar no painel</h3>
-      <p class="prodeba-muted">Use uma conta criada no Supabase Auth.</p>
-      ${message ? `<p>${esc(message)}</p>` : ''}
+      <p class="prodeba-muted">Entre na sua conta para gerir apenas o seu restaurante.</p>
+      ${message ? `<p role="status">${esc(message)}</p>` : ''}
       <form id="prodeba-login-form">
-        <label>Email<input class="prodeba-input" type="email" id="prodeba-login-email" required></label><br>
-        <label>Palavra-passe<input class="prodeba-input" type="password" id="prodeba-login-password" required></label><br>
+        <label>Email<input class="prodeba-input" type="email" id="prodeba-login-email" autocomplete="username" required></label><br>
+        <label>Palavra-passe<input class="prodeba-input" type="password" id="prodeba-login-password" autocomplete="current-password" required></label><br>
         <button class="prodeba-btn" type="submit">Entrar</button>
       </form>
+      <p><button class="prodeba-btn alt" type="button" id="prodeba-forgot-password">Esqueci-me da palavra-passe</button></p>
+      <p><button class="prodeba-btn alt" type="button" id="prodeba-show-signup">Criar conta de restaurante</button></p>
+      <div id="prodeba-signup-box" hidden>
+        <h3>Criar conta</h3>
+        <form id="prodeba-signup-form">
+          <label>Email<input class="prodeba-input" type="email" id="prodeba-signup-email" autocomplete="email" required></label><br>
+          <label>Palavra-passe (mínimo 8 caracteres)<input class="prodeba-input" type="password" id="prodeba-signup-password" minlength="8" autocomplete="new-password" required></label><br>
+          <button class="prodeba-btn" type="submit">Criar conta</button>
+        </form>
+      </div>
     </div>`;
+  }
+
+  function recoveryHtml(message = '') {
+    return `<div class="prodeba-login prodeba-card">
+      <h3>Recuperar palavra-passe</h3>
+      <p class="prodeba-muted">Indique o email da sua conta. Enviaremos um link para definir uma nova palavra-passe.</p>
+      ${message ? `<p role="status">${esc(message)}</p>` : ''}
+      <form id="prodeba-recovery-form">
+        <label>Email<input class="prodeba-input" type="email" id="prodeba-recovery-email" autocomplete="email" required></label><br>
+        <button class="prodeba-btn" type="submit">Enviar link de recuperação</button>
+        <button class="prodeba-btn alt" type="button" id="prodeba-back-login">Voltar ao login</button>
+      </form>
+    </div>`;
+  }
+
+  function passwordUpdateHtml(message = '') {
+    return `<div class="prodeba-login prodeba-card">
+      <h3>Definir nova palavra-passe</h3>
+      ${message ? `<p role="status">${esc(message)}</p>` : ''}
+      <form id="prodeba-update-password-form">
+        <label>Nova palavra-passe (mínimo 8 caracteres)<input class="prodeba-input" type="password" id="prodeba-new-password" minlength="8" autocomplete="new-password" required></label><br>
+        <label>Confirmar palavra-passe<input class="prodeba-input" type="password" id="prodeba-confirm-password" minlength="8" autocomplete="new-password" required></label><br>
+        <button class="prodeba-btn" type="submit">Guardar nova palavra-passe</button>
+      </form>
+    </div>`;
+  }
+
+  function bindRecovery() {
+    $('#prodeba-back-login')?.addEventListener('click', () => { history.replaceState({}, document.title, location.pathname); renderTab(); });
+    $('#prodeba-recovery-form')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = $('#prodeba-recovery-email').value.trim();
+      try {
+        const redirectTo = location.origin + location.pathname + '?prodeba_recovery=1';
+        const { error } = await SB.auth.resetPasswordForEmail(email, { redirectTo });
+        if (error) throw error;
+        $('#prodeba-main').innerHTML = recoveryHtml('Se a conta existir, será enviado um email com o link de recuperação. Verifique também o spam.');
+        bindRecovery();
+      } catch (err) {
+        toast(err.message || 'Não foi possível enviar o email de recuperação.', 'error');
+      }
+    });
+  }
+
+  function bindPasswordUpdate() {
+    $('#prodeba-update-password-form')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const password = $('#prodeba-new-password').value;
+      const confirmPassword = $('#prodeba-confirm-password').value;
+      if (password.length < 8) return toast('Use pelo menos 8 caracteres.', 'error');
+      if (password !== confirmPassword) return toast('As palavras-passe não coincidem.', 'error');
+      try {
+        const { error } = await SB.auth.updateUser({ password });
+        if (error) throw error;
+        await SB.auth.signOut();
+        currentSession = null;
+        history.replaceState({}, document.title, location.pathname);
+        $('#prodeba-main').innerHTML = loginHtml('Palavra-passe alterada. Entre com a nova palavra-passe.');
+        bindLogin();
+        toast('Palavra-passe alterada com sucesso.', 'success');
+      } catch (err) {
+        toast(err.message || 'Não foi possível alterar a palavra-passe.', 'error');
+      }
+    });
   }
 
   function bindLogin() {
@@ -1903,6 +2008,74 @@
         renderTab();
       } catch (err) {
         toast(err.message || 'Falha no login.', 'error');
+      }
+    });
+    $('#prodeba-forgot-password')?.addEventListener('click', () => {
+      $('#prodeba-main').innerHTML = recoveryHtml();
+      bindRecovery();
+    });
+    $('#prodeba-show-signup')?.addEventListener('click', () => {
+      const box = $('#prodeba-signup-box');
+      if (box) box.hidden = !box.hidden;
+    });
+    $('#prodeba-signup-form')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = $('#prodeba-signup-email').value.trim();
+      const password = $('#prodeba-signup-password').value;
+      try {
+        const { data, error } = await SB.auth.signUp({ email, password, options: { emailRedirectTo: location.origin + location.pathname } });
+        if (error) throw error;
+        if (data.session) {
+          currentSession = data.session;
+          toast('Conta criada. Agora registe os dados do restaurante.', 'success');
+          renderTab();
+        } else {
+          $('#prodeba-main').innerHTML = loginHtml('Conta criada. Confirme o email recebido e depois entre para registar o restaurante.');
+          bindLogin();
+        }
+      } catch (err) {
+        toast(err.message || 'Não foi possível criar a conta.', 'error');
+      }
+    });
+  }
+
+  async function renderOnboarding(main) {
+    main.innerHTML = `<div class="prodeba-card">
+      <h3>Configurar o seu restaurante</h3>
+      <p class="prodeba-muted">Esta conta ainda não tem um restaurante associado. Os dados ficarão separados dos outros restaurantes.</p>
+      <form id="prodeba-restaurant-form" class="prodeba-form">
+        <div><label>Nome do restaurante<input class="prodeba-input" id="prodeba-restaurant-name" required maxlength="120"></label></div>
+        <div><label>Tipo de estabelecimento<input class="prodeba-input" id="prodeba-restaurant-type" placeholder="Restaurante, take-away, café…"></label></div>
+        <div><label>Telefone<input class="prodeba-input" id="prodeba-restaurant-phone" type="tel"></label></div>
+        <div><label>WhatsApp<input class="prodeba-input" id="prodeba-restaurant-whatsapp" type="tel"></label></div>
+        <div class="full"><label>Endereço<input class="prodeba-input" id="prodeba-restaurant-address"></label></div>
+        <div class="full"><button class="prodeba-btn" type="submit">Guardar e abrir o meu painel</button></div>
+      </form>
+      <p><button class="prodeba-btn alt" id="prodeba-onboarding-logout" type="button">Sair</button></p>
+    </div>`;
+    $('#prodeba-onboarding-logout')?.addEventListener('click', async () => { await SB.auth.signOut(); currentSession=null; renderTab(); });
+    $('#prodeba-restaurant-form')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      if (!currentSession?.user?.id) return toast('A sessão expirou. Entre novamente.', 'error');
+      const payload = {
+        nome: $('#prodeba-restaurant-name').value.trim(),
+        tipo_estabelecimento: $('#prodeba-restaurant-type').value.trim() || null,
+        telefone: $('#prodeba-restaurant-phone').value.trim() || null,
+        whatsapp: $('#prodeba-restaurant-whatsapp').value.trim() || null,
+        endereco: $('#prodeba-restaurant-address').value.trim() || null,
+        owner_id: currentSession.user.id,
+        ativo: true
+      };
+      try {
+        const { data, error } = await SB.from('restaurantes').insert(payload).select('id,nome').single();
+        if (error) throw error;
+        RESTAURANT_ID = data.id;
+        localStorage.setItem(CFG.storage.restaurant, data.id);
+        toast('Restaurante criado com sucesso.', 'success');
+        activeTab = 'dashboard';
+        renderTab();
+      } catch (err) {
+        toast(err.message || 'Não foi possível criar o restaurante. Verifique as políticas de acesso.', 'error');
       }
     });
   }
