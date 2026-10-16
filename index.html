@@ -1995,14 +1995,15 @@
       const order = orderRows.find(x => String(x.id) === String(orderId));
       if (!order) throw new Error('Pedido não encontrado. Atualize a lista e tente novamente.');
       const total = Number(field(order, ['total'], 0));
+      if (!(total > 0)) throw new Error('O total do pedido não é válido.');
       const existing = await run(SB.from('pagamentos').select('*').eq('pedido_id', orderId).limit(100));
-      const confirmedTotal = (existing || [])
-        .filter(p => norm(field(p, ['status'], '')) === 'confirmado')
-        .reduce((sum, p) => sum + Number(field(p, ['valor'], 0)), 0);
-      if (confirmedTotal + 0.001 < total) {
-        if ((existing || []).length) {
-          throw new Error('Este pedido já tem registos de pagamento. Verifique os valores registados antes de confirmar para evitar duplicações.');
+      const recordedTotal = (existing || []).reduce((sum, p) => sum + Number(field(p, ['valor'], 0)), 0);
+      if ((existing || []).length) {
+        if (Math.abs(recordedTotal - total) > 0.01) {
+          throw new Error('A soma dos pagamentos registados (' + money(recordedTotal) + ') não corresponde ao total do pedido (' + money(total) + '). Os estados não foram alterados para evitar um relatório financeiro incorreto.');
         }
+        await run(SB.from('pagamentos').update({ status: 'confirmado' }).eq('pedido_id', orderId));
+      } else {
         await run(SB.from('pagamentos').insert({
           pedido_id: orderId,
           restaurante_id: field(order, ['restaurante_id'], RESTAURANT_ID),
