@@ -893,7 +893,7 @@
 
     async function loadRestaurants(){
       setNotice("globalNotice",tr("loadingRestaurants"));
-      let { data, error } = await db.from("restaurante").select("*");
+      let { data, error } = await db.from("restaurantes").select("*");
       if(error){
         console.error(error);
         setNotice("globalNotice",`${escapeHTML(tr("loadRestaurantsError"))}: ${escapeHTML(error.message)}`,"error");
@@ -1407,7 +1407,7 @@
     async function adminLogout(){await db.auth.signOut();state.adminUser=null;showView("home");}
 
     async function loadAdminRestaurants(){
-      let {data,error}=await db.from("restaurante").select("*");
+      let {data,error}=await db.from("restaurantes").select("*");
       if(error){setNotice("adminNotice",escapeHTML(error.message),"error");return;}
       state.adminRestaurants=(data||[]).filter(restaurantActive);
       const sel=document.getElementById("adminRestaurantSelect");
@@ -1691,7 +1691,7 @@
 
   async function resolveRestaurant() {
     if (RESTAURANT_ID) return RESTAURANT_ID;
-    const data = await run(SB.from('restaurante').select('*').eq('ativo', true).limit(1));
+    const data = await run(SB.from('restaurantes').select('*').eq('ativo', true).limit(1));
     const row = Array.isArray(data) ? data[0] : data;
     RESTAURANT_ID = row?.id || null;
     if (RESTAURANT_ID) localStorage.setItem(CFG.storage.restaurant, RESTAURANT_ID);
@@ -2197,8 +2197,8 @@
     const out={ok:false,connection:false,restaurant:false,products:false,translations:false,mesas:false,qrs:false,mesaQrIntegrity:false,orderSchema:false,details:{},errors:[]};
     const check=async(name,fn)=>{try{return await fn();}catch(e){out.errors.push(name+': '+(e?.message||e));return null;}};
 
-    await check('Supabase',async()=>{const {error}=await db.from('restaurante').select('id').limit(1);out.connection=!error;if(error)out.errors.push('restaurante: '+error.message);});
-    await check('Restaurante',async()=>{const {data,error}=await db.from('restaurante').select('*').eq('id',rid).limit(1);out.restaurant=!!(data&&data.length&&!error);if(error)out.errors.push('restaurante ID: '+error.message);});
+    await check('Supabase',async()=>{const {error}=await db.from('restaurantes').select('id').limit(1);out.connection=!error;if(error)out.errors.push('restaurantes: '+error.message);});
+    await check('Restaurante',async()=>{const {data,error}=await db.from('restaurantes').select('*').eq('id',rid).limit(1);out.restaurant=!!(data&&data.length&&!error);if(error)out.errors.push('restaurantes ID: '+error.message);});
 
     let products=[];
     await check('Produtos',async()=>{let r=await db.from('produtos').select('*').eq('restaurante_id',rid);if(r.error)r=await db.from('produtos').select('*').eq('restaurant_id',rid);products=r.data||[];out.products=!r.error;if(r.error)out.errors.push('produtos: '+r.error.message);});
@@ -2237,7 +2237,7 @@
       out.details.missingOptionalOrderColumns=missing;
       if(missing.length) out.errors.push('Campos opcionais ausentes em pedidos: '+missing.join(', '));
     });
-    out.ok=out.connection&&out.restaurant&&out.products&&out.translations&&out.mesas&&out.qrs&&out.mesaQrIntegrity&&out.orderSchema&&(!out.errors.some(e=>e.startsWith('Supabase:')||e.startsWith('Restaurante:')||e.startsWith('Produtos:')||e.startsWith('Traduções:')||e.startsWith('Mesas:')||e.startsWith('QR Codes:')||e.startsWith('Pedidos:')));
+    out.ok=out.connection&&out.restaurant&&out.products&&out.translations&&out.mesas&&out.qrs&&out.mesaQrIntegrity&&out.orderSchema&&(!out.errors.some(e=>e.startsWith('Supabase:')||e.startsWith('Restaurantes:')||e.startsWith('Produtos:')||e.startsWith('Traduções:')||e.startsWith('Mesas:')||e.startsWith('QR Codes:')||e.startsWith('Pedidos:')));
     return out;
   }
   if(new URLSearchParams(location.search).get('prodeba_test')==='1'){
