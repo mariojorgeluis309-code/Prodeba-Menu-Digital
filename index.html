@@ -658,6 +658,7 @@
       restaurantesFiltrados: [],
       produtos: [],
       traducoes: [],
+      metodosPagamento: [],
       categorias: [],
       categoriaProduto: "all",
       restauranteAtual: null,
@@ -1037,6 +1038,10 @@
         state.produtos = (response.data || []).filter(productAvailable);
         setNotice("menuNotice","");
       }
+      // Carrega os métodos de pagamento já configurados para este restaurante.
+      const {data: methodsData,error:methodsError}=await db.from("metodos_pagamento").select("*").eq("restaurante_id",rid).eq("ativo",true);
+      state.metodosPagamento = methodsError ? [] : (methodsData || []);
+      if(methodsError) console.warn("metodos_pagamento:",methodsError.message);
       // Carrega a tabela EXISTENTE de traduções.
       const {data: transData,error:transError}=await db.from("traducoes_produtos").select("*");
       if(transError){
@@ -1178,10 +1183,17 @@
         emola:["emola_numero","numero_emola","emola","e_mola_numero"],
         mkesh:["mkesh_numero","numero_mkesh","mkesh","m_kesh_numero"]
       };
+      const restaurantIdValue = text(pick(r,["id","restaurante_id","restaurant_id"]));
+      const configuredMethods = (state.metodosPagamento || []).filter(m => text(pick(m,["restaurante_id","restaurant_id"])) === restaurantIdValue);
       for(const key of ["mpesa","emola","mkesh"]){
         if(typeof out[key] !== "object") out[key]={numero:out[key]};
         if(!out[key].numero) out[key].numero=pick(r,fieldMap[key],"");
         if(!out[key].titular) out[key].titular=pick(r,[`${key}_titular`,`titular_${key}`,"titular_pagamento"],"");
+        const method = configuredMethods.find(m => norm(pick(m,["tipo","metodo","method"],"")).replace(/[^a-z0-9]/g,"") === key);
+        if(method){
+          out[key].numero = pick(method,["numero","telefone","conta"],out[key].numero);
+          out[key].titular = pick(method,["titular","nome"],out[key].titular);
+        }
         if(!out[key].numero) out[key]=PAYMENT_ACCOUNTS_DEFAULT[key];
         else if(!out[key].titular) out[key].titular=PAYMENT_ACCOUNTS_DEFAULT[key].titular;
       }
