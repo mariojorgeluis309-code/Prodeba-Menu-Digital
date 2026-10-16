@@ -2348,11 +2348,43 @@
   async function init() {
     injectStyles();
     buildShell();
-    try { await resolveRestaurant(); } catch (e) { console.warn('[Prodeba] restaurante:', e.message); }
-    await resolveQrContext();
+
+    // Escuta a sessão do Supabase antes de decidir que painel mostrar.
     SB.auth.onAuthStateChange((_event, session) => {
       currentSession = session;
+      // Os links de recuperação devem abrir o formulário de nova palavra-passe,
+      // nunca deixar o utilizador perdido no painel antigo do restaurante.
+      if (isPasswordRecoveryUrl()) {
+        const main = $('#prodeba-main');
+        if (main) {
+          if (session) {
+            main.innerHTML = passwordUpdateHtml();
+            bindPasswordUpdate();
+          } else {
+            main.innerHTML = recoveryHtml('A validar o link de recuperação… Se não avançar, solicite um novo link.');
+            bindRecovery();
+          }
+        }
+      }
     });
+
+    try { await resolveRestaurant(); } catch (e) { console.warn('[Prodeba] restaurante:', e.message); }
+    await resolveQrContext();
+
+    if (isPasswordRecoveryUrl()) {
+      // Abrir automaticamente o painel atualizado ao regressar do email.
+      const { data, error } = await SB.auth.getSession();
+      if (!error) currentSession = data?.session || currentSession;
+      openAdmin();
+    }
+  }
+
+  function isPasswordRecoveryUrl() {
+    const query = new URLSearchParams(location.search);
+    const hash = new URLSearchParams(location.hash.replace(/^#/, ''));
+    return query.get('prodeba_recovery') === '1'
+      || hash.get('type') === 'recovery'
+      || hash.has('access_token') && hash.get('type') === 'recovery';
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
