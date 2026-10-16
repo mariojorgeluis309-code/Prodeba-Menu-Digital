@@ -893,7 +893,7 @@
 
     async function loadRestaurants(){
       setNotice("globalNotice",tr("loadingRestaurants"));
-      let { data, error } = await db.from("restaurante").select("*");
+      let { data, error } = await db.from("restaurantes").select("*");
       if(error){
         console.error(error);
         setNotice("globalNotice",`${escapeHTML(tr("loadRestaurantsError"))}: ${escapeHTML(error.message)}`,"error");
@@ -1277,7 +1277,7 @@
         status_pagamento:state.pagamento==="delivery"?"na_entrega":"pendente",
         itens:items,
         idioma:state.idioma,
-        codigo_pedido:code
+        codigo:code
       };
 
       const result=await insertPedidoAdaptive(payload);
@@ -1343,7 +1343,7 @@
 
     async function fetchOrderByCode(code,showLoading=false){
       if(showLoading) document.getElementById("trackingResult").innerHTML=`<div class="loading">${escapeHTML(tr("queryLoading"))}</div>`;
-      let response=await db.from("pedidos").select("*").eq("codigo_pedido",code).maybeSingle();
+      let response=await db.from("pedidos").select("*").eq("codigo",code).maybeSingle();
       if(response.error){
         response=await db.from("pedidos").select("*").eq("id",code).maybeSingle();
       }
@@ -1356,7 +1356,13 @@
     function showTrackingError(message){document.getElementById("trackingResult").innerHTML=`<div class="notice error">${escapeHTML(message)}</div>`;}
 
     function orderStatus(row){return norm(pick(row,["status","estado","order_status"],"pendente"))||"pendente";}
-    function paymentStatus(row){return norm(pick(row,["status_pagamento","estado_pagamento","payment_status"],"pendente"))||"pendente";}
+    function paymentStatus(row){
+      const explicit=norm(pick(row,["status_pagamento","estado_pagamento","payment_status"],""));
+      if(explicit) return explicit;
+      const order=orderStatus(row);
+      if(["pago","preparando","pronto","entregue"].includes(order)) return "confirmado";
+      return order==="na_entrega" ? "na_entrega" : "pendente";
+    }
 
     function showTrackingResult(row){
       const order=orderStatus(row);
@@ -1407,7 +1413,7 @@
     async function adminLogout(){await db.auth.signOut();state.adminUser=null;showView("home");}
 
     async function loadAdminRestaurants(){
-      let {data,error}=await db.from("restaurante").select("*");
+      let {data,error}=await db.from("restaurantes").select("*");
       if(error){setNotice("adminNotice",escapeHTML(error.message),"error");return;}
       state.adminRestaurants=(data||[]).filter(restaurantActive);
       const sel=document.getElementById("adminRestaurantSelect");
@@ -1690,7 +1696,7 @@
 
   async function resolveRestaurant() {
     if (RESTAURANT_ID) return RESTAURANT_ID;
-    const data = await run(SB.from('restaurante').select('*').eq('ativo', true).limit(1));
+    const data = await run(SB.from('restaurantes').select('*').eq('ativo', true).limit(1));
     const row = Array.isArray(data) ? data[0] : data;
     RESTAURANT_ID = row?.id || null;
     if (RESTAURANT_ID) localStorage.setItem(CFG.storage.restaurant, RESTAURANT_ID);
@@ -1974,23 +1980,28 @@
 
   async function confirmPayment(orderId) {
     try {
-      await run(SB.from('pedidos').update({ status: 'pago' }).eq('id', orderId));
-      // Tentativa compatível com uma tabela de pagamento comum. Se a estrutura da tabela for diferente,
-      // o pedido continua marcado como pago e o erro de pagamento é apenas avisado.
-      try {
-        const order = orderRows.find(x => String(x.id) === String(orderId));
-        const payload = {
+      const order = orderRows.find(x => String(x.id) === String(orderId));
+      if (!order) throw new Error('Pedido não encontrado. Atualize a lista e tente novamente.');
+      const total = Number(field(order, ['total'], 0));
+      const existing = await run(SB.from('pagamentos').select('*').eq('pedido_id', orderId).limit(100));
+      const confirmedTotal = (existing || [])
+        .filter(p => norm(field(p, ['status'], '')) === 'confirmado')
+        .reduce((sum, p) => sum + Number(field(p, ['valor'], 0)), 0);
+      if (confirmedTotal + 0.001 < total) {
+        if ((existing || []).length) {
+          throw new Error('Este pedido já tem registos de pagamento. Verifique os valores registados antes de confirmar para evitar duplicações.');
+        }
+        await run(SB.from('pagamentos').insert({
           pedido_id: orderId,
-          metodo: field(order,['metodo_pagamento','metodo'],null),
-          referencia: field(order,['referencia_pagamento','referencia'],null),
-          valor: Number(field(order,['total'],0)),
+          restaurante_id: field(order, ['restaurante_id'], RESTAURANT_ID),
+          metodo: field(order, ['metodo_pagamento', 'metodo'], null),
+          referencia_externa: field(order, ['referencia_pagamento', 'referencia'], null),
+          valor: total,
           status: 'confirmado'
-        };
-        await run(SB.from('pagamento').insert(payload));
-      } catch (e) {
-        console.warn('[Prodeba] pagamento não inserido:', e.message);
+        }));
       }
-      toast('Pagamento confirmado.', 'success');
+      await run(SB.from('pedidos').update({ status: 'pago' }).eq('id', orderId));
+      toast('Pagamento confirmado e registado.', 'success');
       renderTab();
     } catch (err) { toast(err.message, 'error'); }
   }
@@ -2089,7 +2100,7 @@
       existing = Array.isArray(existing) ? existing[0] : existing;
       if (!existing) {
         const token = randomToken();
-        existing = await run(SB.from('qr_codes').insert({ restaurante_id: rid, tipo: 'mesa', mesa_id: mesaId, qr_token: token, ativo: true }).select('*').single());
+        existing = await run(SB.from('qr_codes').insert({ restaurante_id: rid, tipo: 'mesa', mesa_id: mesaId, token, qr_token: token, ativo: true }).select('*').single());
       }
 
       // 3) Guardar token também na mesa quando a coluna existir.
@@ -2192,12 +2203,13 @@
   'use strict';
   async function runQA(){
     if(typeof db==='undefined') return {ok:false,error:'Cliente Supabase não encontrado.'};
-    const rid=typeof RESTAURANT_ID!=='undefined'?RESTAURANT_ID:null;
+    const restaurantLookup=await db.from('restaurantes').select('id').eq('ativo',true).limit(1);
+    const rid=restaurantLookup.data?.[0]?.id || null;
     const out={ok:false,connection:false,restaurant:false,products:false,translations:false,mesas:false,qrs:false,mesaQrIntegrity:false,orderSchema:false,details:{},errors:[]};
     const check=async(name,fn)=>{try{return await fn();}catch(e){out.errors.push(name+': '+(e?.message||e));return null;}};
 
-    await check('Supabase',async()=>{const {error}=await db.from('restaurante').select('id').limit(1);out.connection=!error;if(error)out.errors.push('restaurante: '+error.message);});
-    await check('Restaurante',async()=>{const {data,error}=await db.from('restaurante').select('*').eq('id',rid).limit(1);out.restaurant=!!(data&&data.length&&!error);if(error)out.errors.push('restaurante ID: '+error.message);});
+    await check('Supabase',async()=>{const {error}=await db.from('restaurantes').select('id').limit(1);out.connection=!error;if(error)out.errors.push('restaurante: '+error.message);});
+    await check('Restaurante',async()=>{const {data,error}=await db.from('restaurantes').select('*').eq('id',rid).limit(1);out.restaurant=!!(data&&data.length&&!error);if(error)out.errors.push('restaurante ID: '+error.message);});
 
     let products=[];
     await check('Produtos',async()=>{let r=await db.from('produtos').select('*').eq('restaurante_id',rid);if(r.error)r=await db.from('produtos').select('*').eq('restaurant_id',rid);products=r.data||[];out.products=!r.error;if(r.error)out.errors.push('produtos: '+r.error.message);});
