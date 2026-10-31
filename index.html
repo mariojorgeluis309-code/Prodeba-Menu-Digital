@@ -1544,7 +1544,7 @@
       if(location.hash.toLowerCase()==="#admin"){
         document.getElementById("btnAdminTop").classList.remove("hidden");
       }
-      document.getElementById("btnAdminTop").addEventListener("click",openAdmin);
+      document.getElementById("btnAdminTop").addEventListener("click",()=>{ if(window.ProdebaModulo && typeof window.ProdebaModulo.abrirAdmin==='function'){ window.ProdebaModulo.abrirAdmin(); } else { setNotice('globalNotice','O painel completo ainda está a carregar. Atualize a página dentro de alguns segundos.','warning'); } });
     }
 
     async function init(){
@@ -1594,7 +1594,7 @@
      ========================================================= */
 
   const CFG = {
-    restaurantId: getIdentifier('RESTAURANT_ID') || getIdentifier('restauranteId') || getGlobal('PRODEBA_RESTAURANT_ID') || 'dc56bb7b-27da-4734-87a3-f1d28ab67f82',
+    restaurantId: getIdentifier('RESTAURANT_ID') || getIdentifier('restauranteId') || getGlobal('PRODEBA_RESTAURANT_ID') || null,
     tableParamNames: ['qr', 'qr_token', 'token'],
     storage: {
       restaurant: 'prodeba_restaurante_id',
