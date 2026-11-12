@@ -2066,6 +2066,7 @@
       $('#prodeba-payment-form').onsubmit=async e=>{
         e.preventDefault();
         const type=$('#pm-type').value;
+        if(rows.some(m=>m.tipo===type && m.ativo)) return toast('Este método já está ativo. Desative o anterior antes de o substituir.','error');
         const names={mpesa:'M-Pesa',emola:'e-Mola',mkesh:'mKesh',transferencia:'Transferência bancária',dinheiro:'Pagamento na entrega'};
         const payload={restaurante_id:rid,tipo:type,nome:$('#pm-name').value.trim()||names[type],numero:$('#pm-number').value.trim()||null,titular:$('#pm-holder').value.trim()||null,banco:$('#pm-bank').value.trim()||null,conta:$('#pm-account').value.trim()||null,ativo:true};
         try{await run(SB.from('metodos_pagamento').insert(payload));toast('Método de pagamento guardado.','success');renderPaymentMethods(main);}
