@@ -1204,7 +1204,7 @@
 
     function openCart(){renderCart();openModal("modalCarrinho");}
 
-    function proceedCheckout(){
+    async function proceedCheckout(){
       if(!state.carrinho.length){setNotice("checkoutNotice",tr("emptyCart"),"warning");return;}
       closeModal("modalCarrinho");
       document.getElementById("checkoutTotal").textContent=money(cartTotal());
