@@ -2083,6 +2083,27 @@
     }catch(err){toast(err.message||'Não foi possível confirmar o pagamento.','error');}
   }
 
+  async function renderPaymentMethods(main) {
+    main.innerHTML='<div class="prodeba-muted">A carregar métodos de pagamento…</div>';
+    try{
+      const rid=await resolveRestaurant();
+      const rows=await run(SB.from('metodos_pagamento').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(100));
+      main.innerHTML='<div class="prodeba-card"><h3>Configurar recebimentos</h3><p class="prodeba-muted">Adicione apenas contas pertencentes a este restaurante. Os clientes verão somente os métodos ativos.</p><form id="prodeba-payment-form" class="prodeba-form"><div><label>Tipo<select class="prodeba-select" id="pm-type"><option value="mpesa">M-Pesa</option><option value="emola">e-Mola</option><option value="mkesh">mKesh</option><option value="transferencia">Transferência bancária</option><option value="visa">Visa</option><option value="mastercard">Mastercard</option><option value="dinheiro">Dinheiro / na entrega</option></select></label></div><div><label>Nome apresentado<input class="prodeba-input" id="pm-name" placeholder="Ex.: M-Pesa do restaurante"></label></div><div><label>Número / Conta<input class="prodeba-input" id="pm-number" autocomplete="off"></label></div><div><label>Titular<input class="prodeba-input" id="pm-holder" autocomplete="name"></label></div><div><label>Banco<input class="prodeba-input" id="pm-bank"></label></div><div><label>Conta / NIB<input class="prodeba-input" id="pm-account"></label></div><div class="full"><button class="prodeba-btn" type="submit">Adicionar método</button></div></form></div><br><div class="prodeba-card"><h3>Métodos configurados</h3><div class="prodeba-table-wrap"><table class="prodeba-table"><thead><tr><th>Método</th><th>Dados</th><th>Estado</th><th>Ação</th></tr></thead><tbody>'+rows.map(m=>'<tr><td>'+esc(m.nome||m.tipo)+'</td><td>'+esc([m.numero,m.titular,m.banco,m.conta,m.nib].filter(Boolean).join(' • ')||'Sem dados adicionais')+'</td><td>'+(m.ativo?'Ativo':'Desativado')+'</td><td><button class="prodeba-btn alt pm-toggle" data-id="'+esc(m.id)+'" data-active="'+String(!!m.ativo)+'">'+(m.ativo?'Desativar':'Ativar')+'</button></td></tr>').join('')+'</tbody></table></div>'+(rows.length?'':'<p class="prodeba-muted">Ainda não configurou métodos. Pode começar pelo M-Pesa ou e-Mola.</p>')+'</div>';
+      $('#prodeba-payment-form').onsubmit=async e=>{
+        e.preventDefault();
+        const type=$('#pm-type').value;
+        const names={mpesa:'M-Pesa',emola:'e-Mola',mkesh:'mKesh',transferencia:'Transferência bancária',visa:'Visa',mastercard:'Mastercard',dinheiro:'Pagamento na entrega'};
+        const payload={restaurante_id:rid,tipo:type,nome:$('#pm-name').value.trim()||names[type],numero:$('#pm-number').value.trim()||null,titular:$('#pm-holder').value.trim()||null,banco:$('#pm-bank').value.trim()||null,conta:$('#pm-account').value.trim()||null,ativo:true};
+        try{await run(SB.from('metodos_pagamento').insert(payload));toast('Método de pagamento guardado.','success');renderPaymentMethods(main);}
+        catch(err){toast(err.message,'error');}
+      };
+      $('.pm-toggle',main).forEach(btn=>btn.onclick=async()=>{
+        try{await run(SB.from('metodos_pagamento').update({ativo:btn.dataset.active!=='true'}).eq('id',btn.dataset.id));renderPaymentMethods(main);}
+        catch(err){toast(err.message,'error');}
+      });
+    }catch(err){main.innerHTML='<div class="prodeba-card"><b>Erro nos métodos de pagamento.</b><p>'+esc(err.message)+'</p></div>';}
+  }
+
   async function renderProducts(main) {
     main.innerHTML = '<div class="prodeba-muted">A carregar produtos…</div>';
     try {
@@ -2092,7 +2113,7 @@
         <form id="prodeba-product-form" class="prodeba-form">
           <div><label>Nome<input class="prodeba-input" id="p-nome" required></label></div>
           <div><label>Preço (MT)<input class="prodeba-input" id="p-preco" type="number" step="0.01" min="0" required></label></div>
-          <div><label>Imagem (URL)<input class="prodeba-input" id="p-imagem" placeholder="https://..."></label></div>
+          <div><label>Imagem (URL)<input class="prodeba-input" id="p-imagem" placeholder="https://..."></label></div><div><label>Ou carregar imagem (JPG, PNG, WebP até 2 MB)<input class="prodeba-input" id="p-ficheiro" type="file" accept="image/jpeg,image/png,image/webp"></label></div>
           <div><label>Disponível<select class="prodeba-select" id="p-ativo"><option value="true">Sim</option><option value="false">Não</option></select></label></div>
           <div class="full"><label>Descrição<textarea class="prodeba-textarea" id="p-descricao"></textarea></label></div>
           <div><button class="prodeba-btn" type="submit">${editingProductId ? 'Guardar alterações' : 'Adicionar produto'}</button> <button class="prodeba-btn alt" type="button" id="p-cancel">Limpar</button></div>
@@ -2116,13 +2137,26 @@
 
   async function saveProduct(e) {
     e.preventDefault();
-    try {
-      const rid = await resolveRestaurant();
-      const payload = { restaurante_id: rid, nome: $('#p-nome').value.trim(), preco: Number($('#p-preco').value||0), imagem: $('#p-imagem').value.trim() || null, descricao: $('#p-descricao').value.trim() || null, ativo: $('#p-ativo').value === 'true' };
-      if (editingProductId) await run(SB.from('produtos').update(payload).eq('id', editingProductId));
+    try{
+      const rid=await resolveRestaurant();
+      const payload={restaurante_id:rid,nome:$('#p-nome').value.trim(),preco:Number($('#p-preco').value||0),imagem:$('#p-imagem').value.trim()||null,descricao:$('#p-descricao').value.trim()||null,ativo:$('#p-ativo').value==='true'};
+      const file=$('#p-ficheiro')?.files?.[0];
+      if(file){
+        const allowed=['image/jpeg','image/png','image/webp'];
+        if(!allowed.includes(file.type)) throw new Error('Formato inválido. Use JPG, PNG ou WebP.');
+        if(file.size>2*1024*1024) throw new Error('A imagem deve ter no máximo 2 MB.');
+        const ext=file.type==='image/png'?'png':file.type==='image/webp'?'webp':'jpg';
+        const path=rid+'/'+(crypto.randomUUID?crypto.randomUUID():Date.now())+'.'+ext;
+        const {error:uploadError}=await SB.storage.from('produtos').upload(path,file,{contentType:file.type,upsert:false});
+        if(uploadError) throw uploadError;
+        payload.imagem=SB.storage.from('produtos').getPublicUrl(path).data.publicUrl;
+      }
+      if(!payload.nome) throw new Error('Informe o nome do produto.');
+      if(!Number.isFinite(payload.preco)||payload.preco<0) throw new Error('Preço inválido.');
+      if(editingProductId) await run(SB.from('produtos').update(payload).eq('id',editingProductId));
       else await run(SB.from('produtos').insert(payload));
-      editingProductId=null; toast('Produto guardado.', 'success'); renderTab();
-    } catch (err) { toast(err.message,'error'); }
+      editingProductId=null;toast('Produto guardado.','success');renderTab();
+    }catch(err){toast(err.message,'error');}
   }
 
   async function deleteProduct(id, main) {
@@ -2143,7 +2177,7 @@
         const m = (mesaRows || []).find(x => String(x.id) === String(id));
         return m ? String(field(m,['numero','nome','name','mesa'],id || '—')) : String(id || '—');
       };
-      main.innerHTML = `<div class="prodeba-card"><h3>Criar QR de mesa</h3><form id="prodeba-qr-form" class="prodeba-toolbar"><input class="prodeba-input" style="max-width:180px" id="qr-mesa" placeholder="Mesa 1" required><button class="prodeba-btn" type="submit">Criar QR</button></form><p class="prodeba-muted">O link será: ${esc(base)}?qr=TOKEN</p></div><br><div class="prodeba-qrs">
+      main.innerHTML = `<div class="prodeba-card"><h3>Criar QR de mesa</h3><form id="prodeba-qr-form" class="prodeba-toolbar"><input class="prodeba-input" style="max-width:180px" id="qr-mesa" placeholder="Mesa 1" required><button class="prodeba-btn" type="submit">Criar QR</button></form><p class="prodeba-muted">O link será: ${esc(base)}?qr=TOKEN</p><button class="prodeba-btn alt" id="prodeba-create-general-qr" type="button">Criar QR geral</button></div><br><div class="prodeba-qrs">
         ${qrRows.map(r=>{
           const token=field(r,['qr_token','token']); const mesa=field(r,['mesa_id','table_id'],''); const tipo=field(r,['tipo'],'mesa'); const mesaNome=mesaLabel(mesa);
           const link=base+'?qr='+encodeURIComponent(token||''); const img='https://api.qrserver.com/v1/create-qr-code/?size=400x400&data='+encodeURIComponent(link);
@@ -2151,17 +2185,27 @@
         }).join('') || '<div class="prodeba-card prodeba-empty">Nenhum QR encontrado.</div>'}
       </div>`;
       $('#prodeba-qr-form').onsubmit=async e=>{e.preventDefault();await createQr($('#qr-mesa').value.trim(),rid,main);};
+      $('#prodeba-create-general-qr').onclick=()=>createGeneralQr(rid,main);
       $$('[data-copy]',main).forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(b.dataset.copy);toast('Link copiado.','success');}catch(_){toast(b.dataset.copy);}});
     } catch(err) { main.innerHTML=`<div class="prodeba-card"><b>Erro nos QR Codes.</b><p>${esc(err.message)}</p></div>`; }
   }
 
   function randomToken() {
-    return 'mesa_' + crypto.getRandomValues(new Uint32Array(2)).join('').slice(0,18);
+    return 'prodeba_' + (crypto.randomUUID ? crypto.randomUUID().replace(/-/g,'') : crypto.getRandomValues(new Uint32Array(4)).join(''));
+  }
+
+  async function createGeneralQr(rid, main) {
+    try {
+      const token=randomToken();
+      await run(SB.from('qr_codes').insert({restaurante_id:rid,tipo:'geral',mesa_id:null,token:token,qr_token:token,ativo:true}));
+      toast('QR geral criado.','success');
+      renderQr(main);
+    } catch(err) { toast(err.message,'error'); }
   }
 
   async function createQr(mesa, rid, main) {
-    const numero = String(mesa || '').trim();
-    if (!numero) { toast('Informe o número da mesa.', 'error'); return; }
+    const numero = Number(String(mesa || '').trim());
+    if (!Number.isInteger(numero) || numero < 1) { toast('Informe um número de mesa inteiro e positivo.', 'error'); return; }
     try {
       // 1) Criar/recuperar a mesa real na tabela mesas.
       let mesaRow = await run(SB.from('mesas').select('*').eq('restaurante_id', rid).eq('numero', numero).limit(1));
@@ -2177,7 +2221,7 @@
       existing = Array.isArray(existing) ? existing[0] : existing;
       if (!existing) {
         const token = randomToken();
-        existing = await run(SB.from('qr_codes').insert({ restaurante_id: rid, tipo: 'mesa', mesa_id: mesaId, qr_token: token, ativo: true }).select('*').single());
+        existing = await run(SB.from('qr_codes').insert({ restaurante_id: rid, tipo: 'mesa', mesa_id: mesaId, token: token, qr_token: token, ativo: true }).select('*').single());
       }
 
       // 3) Guardar token também na mesa quando a coluna existir.
