@@ -417,6 +417,7 @@
     const SUPABASE_ANON_KEY = "sb_publishable_ZVPSVRR1xhjwLygafvVlRA_DSdqKao0";
     const { createClient } = supabase;
     const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    window.prodebaSB = db;
 
     const PAYMENT_ACCOUNTS_DEFAULT = {
       mpesa: { numero: "", titular: "" },
@@ -1790,6 +1791,7 @@
             <button data-tab="dashboard">📊 Dashboard</button>
             <button data-tab="orders">📦 Pedidos</button>
             <button data-tab="products">🍔 Produtos</button>
+            <button data-tab="payments">💳 Pagamentos</button>
             <button data-tab="qr">📲 QR / Mesas</button>
             <button data-tab="finance">💰 Financeiro</button>
             <button data-tab="accounts">👤 Contas</button>
@@ -1855,6 +1857,7 @@
     if (activeTab === 'dashboard') return renderDashboard(main);
     if (activeTab === 'orders') return renderOrders(main);
     if (activeTab === 'products') return renderProducts(main);
+    if (activeTab === 'payments') return renderPaymentMethods(main);
     if (activeTab === 'qr') return renderQr(main);
     if (activeTab === 'finance') return renderFinance(main);
     if (activeTab === 'accounts') return renderAccounts(main);
@@ -1992,133 +1995,92 @@
   }
 
   async function renderOnboarding(main) {
-    main.innerHTML = `<div class="prodeba-card">
-      <h3>Configurar o seu restaurante</h3>
-      <p class="prodeba-muted">Esta conta ainda não tem um restaurante associado. Os dados ficarão separados dos outros restaurantes.</p>
-      <form id="prodeba-restaurant-form" class="prodeba-form">
-        <div><label>Nome do restaurante<input class="prodeba-input" id="prodeba-restaurant-name" required maxlength="120"></label></div>
-        <div><label>Tipo de estabelecimento<input class="prodeba-input" id="prodeba-restaurant-type" placeholder="Restaurante, take-away, café…"></label></div>
-        <div><label>Telefone<input class="prodeba-input" id="prodeba-restaurant-phone" type="tel"></label></div>
-        <div><label>WhatsApp<input class="prodeba-input" id="prodeba-restaurant-whatsapp" type="tel"></label></div>
-        <div class="full"><label>Endereço<input class="prodeba-input" id="prodeba-restaurant-address"></label></div>
-        <div class="full"><button class="prodeba-btn" type="submit">Guardar e abrir o meu painel</button></div>
-      </form>
-      <p><button class="prodeba-btn alt" id="prodeba-onboarding-logout" type="button">Sair</button></p>
-    </div>`;
+    main.innerHTML = '<div class="prodeba-card"><h3>Configurar o seu restaurante</h3><p class="prodeba-muted">A sua conta ficará ligada apenas ao seu estabelecimento. Outros restaurantes não terão acesso aos seus dados.</p><form id="prodeba-restaurant-form" class="prodeba-form"><div><label>Nome do restaurante<input class="prodeba-input" id="prodeba-restaurant-name" required maxlength="120"></label></div><div><label>Tipo de estabelecimento<select class="prodeba-select" id="prodeba-restaurant-type"><option value="restaurante">Restaurante</option><option value="fast-food">Fast-food</option><option value="takeaway">Take-away</option><option value="cafe">Café</option><option value="bar">Bar</option><option value="hotel">Hotel</option><option value="outro">Outro</option></select></label></div><div><label>Telefone<input class="prodeba-input" id="prodeba-restaurant-phone" type="tel"></label></div><div><label>WhatsApp<input class="prodeba-input" id="prodeba-restaurant-whatsapp" type="tel"></label></div><div class="full"><label>Endereço<input class="prodeba-input" id="prodeba-restaurant-address"></label></div><div class="full"><button class="prodeba-btn" type="submit">Guardar e abrir o meu painel</button></div></form><p><button class="prodeba-btn alt" id="prodeba-onboarding-logout" type="button">Sair</button></p></div>';
     $('#prodeba-onboarding-logout')?.addEventListener('click', async () => { await SB.auth.signOut(); currentSession=null; renderTab(); });
     $('#prodeba-restaurant-form')?.addEventListener('submit', async e => {
       e.preventDefault();
       if (!currentSession?.user?.id) return toast('A sessão expirou. Entre novamente.', 'error');
-      const payload = {
-        nome: $('#prodeba-restaurant-name').value.trim(),
-        tipo_estabelecimento: $('#prodeba-restaurant-type').value.trim() || null,
-        telefone: $('#prodeba-restaurant-phone').value.trim() || null,
-        whatsapp: $('#prodeba-restaurant-whatsapp').value.trim() || null,
-        endereco: $('#prodeba-restaurant-address').value.trim() || null,
-        owner_id: currentSession.user.id,
-        ativo: true
-      };
+      const name=$('#prodeba-restaurant-name').value.trim();
+      const type=$('#prodeba-restaurant-type').value;
+      const phone=$('#prodeba-restaurant-phone').value.trim()||null;
+      const whatsapp=$('#prodeba-restaurant-whatsapp').value.trim()||null;
+      const address=$('#prodeba-restaurant-address').value.trim()||null;
       try {
-        const { data, error } = await SB.from('restaurantes').insert(payload).select('id,nome').single();
-        if (error) throw error;
-        RESTAURANT_ID = data.id;
-        localStorage.setItem(CFG.storage.restaurant, data.id);
-        toast('Restaurante criado com sucesso.', 'success');
-        activeTab = 'dashboard';
-        renderTab();
-      } catch (err) {
-        toast(err.message || 'Não foi possível criar o restaurante. Verifique as políticas de acesso.', 'error');
-      }
+        const {data,error}=await SB.rpc('criar_meu_estabelecimento',{p_nome:name,p_tipo:type,p_telefone:phone,p_endereco:address,p_descricao:null});
+        if(error) throw error;
+        const row=Array.isArray(data)?data[0]:data;
+        if(!row?.id) throw new Error('O estabelecimento foi criado, mas não foi devolvido um identificador.');
+        if(whatsapp){
+          const {error:updateError}=await SB.from('restaurantes').update({whatsapp}).eq('id',row.id);
+          if(updateError) throw updateError;
+        }
+        RESTAURANT_ID=row.id;localStorage.setItem(CFG.storage.restaurant,row.id);
+        toast('Restaurante criado com sucesso. Configure agora os métodos de pagamento e os produtos.','success');
+        activeTab='dashboard';renderTab();
+      } catch(err){toast(err.message||'Não foi possível criar o restaurante.','error');}
     });
   }
 
   async function renderDashboard(main) {
-    main.innerHTML = '<div class="prodeba-muted">A carregar dashboard…</div>';
-    try {
-      const rid = await resolveRestaurant();
-      const [orders, expenses] = await Promise.all([
-        run(SB.from('pedidos').select('*').eq('restaurante_id', rid).order('created_at', { ascending: false }).limit(500)),
-        run(SB.from('despesas').select('*').eq('restaurante_id', rid).order('created_at', { ascending: false }).limit(500)).catch(() => [])
+    main.innerHTML='<div class="prodeba-muted">A carregar dashboard…</div>';
+    try{
+      const rid=await resolveRestaurant();
+      const [orders,payments,expenses]=await Promise.all([
+        run(SB.from('pedidos').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(500)),
+        run(SB.from('pagamentos').select('*').eq('restaurante_id',rid).limit(1000)),
+        run(SB.from('despesas').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(500)).catch(()=>[])
       ]);
-      const totalSales = (orders || []).filter(o => CFG.statusesPaid.includes(field(o,['status']))).reduce((s,o) => s + Number(field(o,['total'],0)),0);
-      const totalExpenses = (expenses || []).reduce((s,o) => s + Number(field(o,['valor','total','montante'],0)),0);
-      const pending = (orders || []).filter(o => ['pendente','aguardando_pagamento'].includes(field(o,['status']))).length;
-      main.innerHTML = `<div class="prodeba-grid">
-        <div class="prodeba-card"><div class="label">Pedidos</div><div class="value">${orders.length}</div></div>
-        <div class="prodeba-card"><div class="label">Pendentes</div><div class="value">${pending}</div></div>
-        <div class="prodeba-card"><div class="label">Vendas confirmadas</div><div class="value">${money(totalSales)}</div></div>
-        <div class="prodeba-card"><div class="label">Saldo calculado</div><div class="value">${money(totalSales-totalExpenses)}</div></div>
-      </div>
-      <br>
-      <div class="prodeba-card"><h3>Fluxo</h3><p class="prodeba-muted">QR → Mesa → Carrinho → Pedido → Pagamento → Painel → Financeiro.</p></div>`;
-    } catch (err) {
-      main.innerHTML = `<div class="prodeba-card"><b>Erro no dashboard.</b><p>${esc(err.message)}</p></div>`;
-    }
+      const paid=(payments||[]).filter(p=>p.status==='pago');
+      const totalSales=paid.reduce((sum,p)=>sum+Number(p.valor||0),0);
+      const totalExpenses=(expenses||[]).reduce((sum,x)=>sum+Number(field(x,['valor'],0)),0);
+      const pending=(orders||[]).filter(o=>['pendente','aguardando_pagamento'].includes(field(o,['status']))).length;
+      main.innerHTML='<div class="prodeba-grid"><div class="prodeba-card"><div class="label">Pedidos</div><div class="value">'+orders.length+'</div></div><div class="prodeba-card"><div class="label">Pendentes</div><div class="value">'+pending+'</div></div><div class="prodeba-card"><div class="label">Pagamentos recebidos</div><div class="value">'+money(totalSales)+'</div></div><div class="prodeba-card"><div class="label">Saldo calculado</div><div class="value">'+money(totalSales-totalExpenses)+'</div></div></div><br><div class="prodeba-card"><h3>Fluxo do Prodeba</h3><p class="prodeba-muted">QR → Menu → Carrinho → Pedido transacional → Pagamento → Preparação → Entrega → Financeiro.</p></div>';
+    }catch(err){main.innerHTML='<div class="prodeba-card"><b>Erro no dashboard.</b><p>'+esc(err.message)+'</p></div>';}
   }
 
   async function renderOrders(main) {
-    main.innerHTML = '<div class="prodeba-muted">A carregar pedidos…</div>';
-    try {
-      const rid = await resolveRestaurant();
-      orderRows = await run(SB.from('pedidos').select('*').eq('restaurante_id', rid).order('created_at', { ascending: false }).limit(300));
-      if (!orderRows.length) {
-        main.innerHTML = `<div class="prodeba-card prodeba-empty">Ainda não há pedidos.</div>`;
-        return;
-      }
-      main.innerHTML = `<div class="prodeba-toolbar"><button class="prodeba-btn" id="prodeba-refresh-orders">Atualizar</button></div>
-      <div class="prodeba-table-wrap"><table class="prodeba-table"><thead><tr>
-        <th>ID</th><th>Cliente</th><th>Mesa</th><th>Total</th><th>Pagamento</th><th>Estado</th><th>Data</th><th>Ação</th>
-      </tr></thead><tbody>${orderRows.map(o => {
-        const id = o.id;
-        const customer = field(o,['cliente_nome','nome_cliente','nome','cliente'],'—');
-        const phone = field(o,['cliente_telefone','telefone','telefone_cliente','telefone_pagamento'],'');
-        const mesa = field(o,['mesa_id','table_id'],'—');
-        const total = field(o,['total'],0);
-        const method = field(o,['metodo_pagamento','metodo'],'—');
-        const status = field(o,['status'],'—');
-        return `<tr><td>${esc(String(id).slice(0,10))}</td><td>${esc(customer)}${phone?`<br><span class="prodeba-muted">${esc(phone)}</span>`:''}</td><td>${esc(mesa)}</td><td>${money(total)}</td><td>${esc(method)}</td><td><span class="prodeba-status">${esc(status)}</span></td><td>${esc(dateTime(field(o,['created_at','data'])))}</td><td>
-          <select class="prodeba-select prodeba-order-status" data-id="${esc(id)}">
-            ${CFG.orderStatuses.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s}</option>`).join('')}
-          </select><br><button class="prodeba-btn success prodeba-confirm-payment" data-id="${esc(id)}">Confirmar pagamento</button>
-        </td></tr>`;
-      }).join('')}</tbody></table></div>`;
-
-      $('#prodeba-refresh-orders').onclick = () => renderOrders(main);
-      $$('.prodeba-order-status', main).forEach(sel => sel.addEventListener('change', () => updateOrderStatus(sel.dataset.id, sel.value)));
-      $$('.prodeba-confirm-payment', main).forEach(btn => btn.addEventListener('click', () => confirmPayment(btn.dataset.id)));
-    } catch (err) {
-      main.innerHTML = `<div class="prodeba-card"><b>Erro ao carregar pedidos.</b><p>${esc(err.message)}</p></div>`;
-    }
+    main.innerHTML='<div class="prodeba-muted">A carregar pedidos…</div>';
+    try{
+      const rid=await resolveRestaurant();
+      const [orders,payments]=await Promise.all([
+        run(SB.from('pedidos').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(300)),
+        run(SB.from('pagamentos').select('*').eq('restaurante_id',rid).limit(1000))
+      ]);
+      orderRows=orders||[];
+      if(!orderRows.length){main.innerHTML='<div class="prodeba-card prodeba-empty">Ainda não há pedidos.</div>';return;}
+      const paymentByOrder={};
+      (payments||[]).forEach(p=>{(paymentByOrder[p.pedido_id]||(paymentByOrder[p.pedido_id]=[])).push(p);});
+      main.innerHTML='<div class="prodeba-toolbar"><button class="prodeba-btn" id="prodeba-refresh-orders">Atualizar</button></div><div class="prodeba-table-wrap"><table class="prodeba-table"><thead><tr><th>Código</th><th>Cliente</th><th>Mesa / Local</th><th>Total</th><th>Pagamento</th><th>Estado</th><th>Data</th><th>Ação</th></tr></thead><tbody>'+
+        orderRows.map(o=>{
+          const ps=paymentByOrder[o.id]||[];
+          const paymentState=ps.length&&ps.every(p=>p.status==='pago')?'Confirmado':ps.some(p=>p.status==='falhou')?'Falhou':'Pendente';
+          const code=field(o,['codigo'],'—');
+          const customer=field(o,['nome_cliente'],'—');
+          const phone=field(o,['telefone_pagamento'],'');
+          const place=field(o,['mesa_id'],'')?'Mesa associada':field(o,['local_entrega'],'—');
+          const status=field(o,['status'],'pendente');
+          const statusOptions=CFG.orderStatuses.filter(x=>x!=='pago').map(x=>'<option value="'+x+'" '+(x===status?'selected':'')+'>'+x+'</option>').join('');
+          return '<tr><td>'+esc(code)+'</td><td>'+esc(customer)+(phone?'<br><span class="prodeba-muted">'+esc(phone)+'</span>':'')+'</td><td>'+esc(place)+'</td><td>'+money(o.total)+'</td><td>'+esc(paymentState)+'<br><span class="prodeba-muted">'+esc(field(o,['metodo_pagamento'],'—'))+'</span></td><td><span class="prodeba-status">'+esc(status)+'</span></td><td>'+esc(dateTime(o.created_at))+'</td><td><select class="prodeba-select prodeba-order-status" data-id="'+esc(o.id)+'">'+statusOptions+'</select><br><button class="prodeba-btn success prodeba-confirm-payment" data-id="'+esc(o.id)+'" '+(paymentState==='Confirmado'?'disabled':'')+'>Confirmar pagamento</button></td></tr>';
+        }).join('')+'</tbody></table></div>';
+      $('#prodeba-refresh-orders').onclick=()=>renderOrders(main);
+      $$('.prodeba-order-status',main).forEach(sel=>sel.addEventListener('change',()=>updateOrderStatus(sel.dataset.id,sel.value)));
+      $$('.prodeba-confirm-payment',main).forEach(btn=>btn.addEventListener('click',()=>confirmPayment(btn.dataset.id)));
+    }catch(err){main.innerHTML='<div class="prodeba-card"><b>Erro ao carregar pedidos.</b><p>'+esc(err.message)+'</p></div>';}
   }
 
   async function updateOrderStatus(id, status) {
-    try {
-      await run(SB.from('pedidos').update({ status }).eq('id', id));
-      toast('Estado atualizado.', 'success');
-    } catch (err) { toast(err.message, 'error'); }
+    if(status==='pago') return toast('Confirme o pagamento no botão próprio.','error');
+    try{await run(SB.from('pedidos').update({status}).eq('id',id));toast('Estado atualizado.','success');}
+    catch(err){toast(err.message,'error');}
   }
 
   async function confirmPayment(orderId) {
-    try {
-      await run(SB.from('pedidos').update({ status: 'pago' }).eq('id', orderId));
-      // Tentativa compatível com uma tabela de pagamento comum. Se a estrutura da tabela for diferente,
-      // o pedido continua marcado como pago e o erro de pagamento é apenas avisado.
-      try {
-        const order = orderRows.find(x => String(x.id) === String(orderId));
-        const payload = {
-          pedido_id: orderId,
-          metodo: field(order,['metodo_pagamento','metodo'],null),
-          referencia: field(order,['referencia_pagamento','referencia'],null),
-          valor: Number(field(order,['total'],0)),
-          status: 'confirmado'
-        };
-        await run(SB.from('pagamento').insert(payload));
-      } catch (e) {
-        console.warn('[Prodeba] pagamento não inserido:', e.message);
-      }
-      toast('Pagamento confirmado.', 'success');
+    try{
+      const {data,error}=await SB.rpc('confirmar_pagamento_pedido',{p_pedido_id:orderId});
+      if(error) throw error;
+      toast('Pagamento confirmado e registado no financeiro.','success');
       renderTab();
-    } catch (err) { toast(err.message, 'error'); }
+    }catch(err){toast(err.message||'Não foi possível confirmar o pagamento.','error');}
   }
 
   async function renderProducts(main) {
@@ -2232,20 +2194,21 @@
 
   async function renderFinance(main) {
     main.innerHTML='<div class="prodeba-muted">A carregar financeiro…</div>';
-    try {
+    try{
       const rid=await resolveRestaurant();
-      const [orders,expenses]=await Promise.all([
+      const [orders,payments,expenses]=await Promise.all([
         run(SB.from('pedidos').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(1000)),
-        run(SB.from('despesas').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(1000)).catch(()=>[])
+        run(SB.from('pagamentos').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(2000)),
+        run(SB.from('despesas').select('*').eq('restaurante_id',rid).order('created_at',{ascending:false}).limit(1000))
       ]);
       expenseRows=expenses||[];
-      const sales= (orders||[]).filter(o=>CFG.statusesPaid.includes(field(o,['status']))).reduce((s,o)=>s+Number(field(o,['total'],0)),0);
-      const exp=(expenseRows||[]).reduce((s,o)=>s+Number(field(o,['valor','total','montante'],0)),0);
-      main.innerHTML=`<div class="prodeba-grid"><div class="prodeba-card"><div class="label">Vendas</div><div class="value">${money(sales)}</div></div><div class="prodeba-card"><div class="label">Despesas</div><div class="value">${money(exp)}</div></div><div class="prodeba-card"><div class="label">Saldo</div><div class="value">${money(sales-exp)}</div></div><div class="prodeba-card"><div class="label">Pedidos pagos</div><div class="value">${orders.filter(o=>CFG.statusesPaid.includes(field(o,['status']))).length}</div></div></div><br>
-        <div class="prodeba-card"><h3>Registar despesa</h3><form id="prodeba-exp-form" class="prodeba-form"><div><label>Descrição<input class="prodeba-input" id="exp-desc" required></label></div><div><label>Valor (MT)<input class="prodeba-input" id="exp-valor" type="number" step="0.01" min="0" required></label></div><div><button class="prodeba-btn" type="submit">Guardar despesa</button></div></form></div><br>
-        <div class="prodeba-table-wrap"><table class="prodeba-table"><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>${expenseRows.map(x=>`<tr><td>${esc(dateTime(field(x,['created_at','data'])))}</td><td>${esc(field(x,['descricao','description','nome'],'—'))}</td><td>${money(field(x,['valor','total','montante'],0))}</td></tr>`).join('')||'<tr><td colspan="3" class="prodeba-empty">Sem despesas registadas.</td></tr>'}</tbody></table></div>`;
+      const paid=(payments||[]).filter(p=>p.status==='pago');
+      const sales=paid.reduce((sum,p)=>sum+Number(p.valor||0),0);
+      const exp=expenseRows.reduce((sum,x)=>sum+Number(field(x,['valor'],0)),0);
+      const pending=(payments||[]).filter(p=>p.status==='pendente'||p.status==='processando').reduce((sum,p)=>sum+Number(p.valor||0),0);
+      main.innerHTML='<div class="prodeba-grid"><div class="prodeba-card"><div class="label">Pagamentos recebidos</div><div class="value">'+money(sales)+'</div></div><div class="prodeba-card"><div class="label">Pagamentos pendentes</div><div class="value">'+money(pending)+'</div></div><div class="prodeba-card"><div class="label">Despesas</div><div class="value">'+money(exp)+'</div></div><div class="prodeba-card"><div class="label">Saldo líquido</div><div class="value">'+money(sales-exp)+'</div></div></div><br><div class="prodeba-card"><h3>Registar despesa</h3><form id="prodeba-exp-form" class="prodeba-form"><div><label>Descrição<input class="prodeba-input" id="exp-desc" required maxlength="160"></label></div><div><label>Valor (MT)<input class="prodeba-input" id="exp-valor" type="number" step="0.01" min="0.01" required></label></div><div><button class="prodeba-btn" type="submit">Guardar despesa</button></div></form></div><br><div class="prodeba-table-wrap"><table class="prodeba-table"><thead><tr><th>Data</th><th>Descrição</th><th>Valor</th></tr></thead><tbody>'+expenseRows.map(x=>'<tr><td>'+esc(dateTime(x.created_at))+'</td><td>'+esc(field(x,['descricao'],'—'))+'</td><td>'+money(x.valor)+'</td></tr>').join('')+'</tbody></table></div>';
       $('#prodeba-exp-form').onsubmit=async e=>{e.preventDefault();await addExpense($('#exp-desc').value.trim(),Number($('#exp-valor').value||0),rid);};
-    } catch(err){main.innerHTML=`<div class="prodeba-card"><b>Erro no financeiro.</b><p>${esc(err.message)}</p></div>`;}
+    }catch(err){main.innerHTML='<div class="prodeba-card"><b>Erro no financeiro.</b><p>'+esc(err.message)+'</p></div>';}
   }
 
   async function addExpense(desc, value, rid) {
