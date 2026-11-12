@@ -419,11 +419,7 @@
     const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     window.prodebaSB = db;
 
-    const PAYMENT_ACCOUNTS_DEFAULT = {
-      mpesa: { numero: "", titular: "" },
-      emola: { numero: "", titular: "" },
-      mkesh: { numero: "", titular: "" }
-    };
+
 
     const I18N = {
       pt: {
@@ -1163,37 +1159,7 @@
       try{ state.carrinho=JSON.parse(localStorage.getItem(`prodeba_cart_${rid}`)||"[]"); }catch{state.carrinho=[];}
     }
 
-    function paymentAccountsForRestaurant(r){
-      const raw=pick(r,["contas_pagamento","metodos_pagamento","payment_accounts","payment_methods"],null);
-      let parsed=null;
-      if(typeof raw === "string"){
-        try{parsed=JSON.parse(raw)}catch{}
-      }else if(raw && typeof raw === "object") parsed=raw;
-      const out={
-        mpesa: parsed?.mpesa || parsed?.m_pesa || {},
-        emola: parsed?.emola || parsed?.e_mola || {},
-        mkesh: parsed?.mkesh || parsed?.m_kesh || {},
-        bank: parsed?.bank || parsed?.banco || {}
-      };
-      const fieldMap={
-        mpesa:["mpesa_numero","numero_mpesa","mpesa","m_pesa_numero"],
-        emola:["emola_numero","numero_emola","emola","e_mola_numero"],
-        mkesh:["mkesh_numero","numero_mkesh","mkesh","m_kesh_numero"]
-      };
-      for(const key of ["mpesa","emola","mkesh"]){
-        if(typeof out[key] !== "object") out[key]={numero:out[key]};
-        if(!out[key].numero) out[key].numero=pick(r,fieldMap[key],"");
-        if(!out[key].titular) out[key].titular=pick(r,[`${key}_titular`,`titular_${key}`,"titular_pagamento"],"");
-        if(!out[key].numero) out[key]=PAYMENT_ACCOUNTS_DEFAULT[key];
-        else if(!out[key].titular) out[key].titular=PAYMENT_ACCOUNTS_DEFAULT[key].titular;
-      }
-      out.bank = {
-        banco: out.bank?.banco || pick(r,["banco","bank_name","nome_banco"],""),
-        conta: out.bank?.conta || pick(r,["conta_bancaria","bank_account","numero_conta"],""),
-        titular: out.bank?.titular || pick(r,["titular_conta","account_holder","titular_banco"],"")
-      };
-      return out;
-    }
+
 
     async function renderPaymentOptions(){
       const rid=text(pick(state.restauranteAtual,["id","restaurante_id","restaurant_id"]));
@@ -1502,7 +1468,7 @@
       document.querySelectorAll(".overlay").forEach(overlay=>overlay.addEventListener("click",e=>{if(e.target===overlay)closeModal(overlay.id);}));
 
       // Atalho administrativo discreto: #admin
-      if(location.hash.toLowerCase()==="#admin"){
+      if(location.hash.toLowerCase()==="#admin" || new URLSearchParams(location.search).get("admin")==="1"){
         document.getElementById("btnAdminTop").classList.remove("hidden");
       }
       document.getElementById("btnAdminTop").addEventListener("click",()=>{ if(window.ProdebaModulo && typeof window.ProdebaModulo.abrirAdmin==='function'){ window.ProdebaModulo.abrirAdmin(); } else { setNotice('globalNotice','O painel completo ainda está a carregar. Atualize a página dentro de alguns segundos.','warning'); } });
@@ -1777,6 +1743,7 @@
     const btn = document.createElement('button');
     btn.id = 'prodeba-admin-launcher';
     btn.type = 'button';
+    btn.hidden = !(location.hash.toLowerCase()==='#admin' || new URLSearchParams(location.search).get('admin')==='1');
     btn.textContent = '⚙️ Admin Prodeba';
     btn.addEventListener('click', openAdmin);
     document.body.appendChild(btn);
@@ -2060,7 +2027,8 @@
           const place=field(o,['mesa_id'],'')?'Mesa associada':field(o,['local_entrega'],'—');
           const status=field(o,['status'],'pendente');
           const statusOptions=CFG.orderStatuses.filter(x=>x!=='pago').map(x=>'<option value="'+x+'" '+(x===status?'selected':'')+'>'+x+'</option>').join('');
-          return '<tr><td>'+esc(code)+'</td><td>'+esc(customer)+(phone?'<br><span class="prodeba-muted">'+esc(phone)+'</span>':'')+'</td><td>'+esc(place)+'</td><td>'+money(o.total)+'</td><td>'+esc(paymentState)+'<br><span class="prodeba-muted">'+esc(field(o,['metodo_pagamento'],'—'))+'</span></td><td><span class="prodeba-status">'+esc(status)+'</span></td><td>'+esc(dateTime(o.created_at))+'</td><td><select class="prodeba-select prodeba-order-status" data-id="'+esc(o.id)+'">'+statusOptions+'</select><br><button class="prodeba-btn success prodeba-confirm-payment" data-id="'+esc(o.id)+'" '+(paymentState==='Confirmado'?'disabled':'')+'>Confirmar pagamento</button></td></tr>';
+          const statusControl=status==='pago'?'<span class="prodeba-status">pago</span>':'<select class="prodeba-select prodeba-order-status" data-id="'+esc(o.id)+'">'+statusOptions+'</select>';
+          return '<tr><td>'+esc(code)+'</td><td>'+esc(customer)+(phone?'<br><span class="prodeba-muted">'+esc(phone)+'</span>':'')+'</td><td>'+esc(place)+'</td><td>'+money(o.total)+'</td><td>'+esc(paymentState)+'<br><span class="prodeba-muted">'+esc(field(o,['metodo_pagamento'],'—'))+'</span></td><td><span class="prodeba-status">'+esc(status)+'</span></td><td>'+esc(dateTime(o.created_at))+'</td><td>'+statusControl+'<br><button class="prodeba-btn success prodeba-confirm-payment" data-id="'+esc(o.id)+'" '+(paymentState==='Confirmado'?'disabled':'')+'>Confirmar pagamento</button></td></tr>';
         }).join('')+'</tbody></table></div>';
       $('#prodeba-refresh-orders').onclick=()=>renderOrders(main);
       $$('.prodeba-order-status',main).forEach(sel=>sel.addEventListener('change',()=>updateOrderStatus(sel.dataset.id,sel.value)));
@@ -2351,63 +2319,35 @@
 </script>
 
 <script>
-/* PRODEBA FINAL QA — não substitui o sistema principal.
-   Abre com ?prodeba_test=1 para testar conexão, mesas, QR e traduções. */
+/* PRODEBA QA — verificações públicas e seguras, sem tentar ler tabelas privadas. */
 (function(){
   'use strict';
   async function runQA(){
-    if(typeof db==='undefined') return {ok:false,error:'Cliente Supabase não encontrado.'};
-    const rid=typeof RESTAURANT_ID!=='undefined'?RESTAURANT_ID:null;
-    const out={ok:false,connection:false,restaurant:false,products:false,translations:false,mesas:false,qrs:false,mesaQrIntegrity:false,orderSchema:false,details:{},errors:[]};
-    const check=async(name,fn)=>{try{return await fn();}catch(e){out.errors.push(name+': '+(e?.message||e));return null;}};
-
-    await check('Supabase',async()=>{const {error}=await db.from('restaurantes').select('id').limit(1);out.connection=!error;if(error)out.errors.push('restaurantes: '+error.message);});
-    await check('Restaurante',async()=>{const {data,error}=await db.from('restaurantes').select('*').eq('id',rid).limit(1);out.restaurant=!!(data&&data.length&&!error);if(error)out.errors.push('restaurantes ID: '+error.message);});
-
-    let products=[];
-    await check('Produtos',async()=>{let r=await db.from('produtos').select('*').eq('restaurante_id',rid);if(r.error)r=await db.from('produtos').select('*').eq('restaurant_id',rid);products=r.data||[];out.products=!r.error;if(r.error)out.errors.push('produtos: '+r.error.message);});
-    await check('Traduções',async()=>{const ids=products.map(p=>p.id).filter(Boolean);let r=ids.length?await db.from('traducoes_produtos').select('*').in('produto_id',ids):await db.from('traducoes_produtos').select('*').limit(1);out.translations=!r.error;if(r.error)out.errors.push('traducoes_produtos: '+r.error.message);else{const rows=r.data||[];out.details.translationRows=rows.length;const langs=['pt','en','fr','es','zh'];out.details.translationCoverage=langs.reduce((a,l)=>{a[l]=products.filter(p=>rows.some(t=>String(field(t,['produto_id','id_produto','product_id'],'')||'')===String(p.id)&&normalizeLanguage(field(t,['idioma','language','lang','codigo_idioma','locale'],''))===l)).length;return a;},{});}});
-
-    let mesas=[];
-    await check('Mesas',async()=>{const {data,error}=await db.from('mesas').select('*').eq('restaurante_id',rid).order('numero');mesas=data||[];out.mesas=!error;if(error)out.errors.push('mesas: '+error.message);out.details.mesas=mesas.length;});
-    let qrs=[];
-    await check('QR Codes',async()=>{const {data,error}=await db.from('qr_codes').select('*').eq('restaurante_id',rid);qrs=data||[];out.qrs=!error;if(error)out.errors.push('qr_codes: '+error.message);out.details.qrs=qrs.length;});
-
-    if(out.mesas&&out.qrs){
-      const activeTables=mesas.filter(m=>m.ativo!==false);
-      const activeQrs=qrs.filter(q=>q.ativo!==false);
-      const missing=activeTables.filter(m=>m.id&&!activeQrs.some(q=>String(field(q,['mesa_id','table_id'],''))===String(m.id)));
-      const orphan=activeQrs.filter(q=>{const mid=field(q,['mesa_id','table_id'],'');return mid && !mesas.some(m=>String(m.id)===String(mid));});
-      out.details.mesasSemQr=missing.map(m=>field(m,['numero','nome','name'],m.id));
-      out.details.qrOrfaos=orphan.map(q=>field(q,['qr_token','token'],q.id));
-      out.mesaQrIntegrity=missing.length===0&&orphan.length===0;
-      if(missing.length)out.errors.push('Mesas sem QR ativo: '+missing.map(m=>field(m,['numero','nome','name'],m.id)).join(', '));
-      if(orphan.length)out.errors.push('QRs apontando para mesa inexistente: '+orphan.length);
-    }
-
-    await check('Pedidos',async()=>{
-      const required=['id','restaurante_id','status','total'];
-      const optional=['mesa_id','mesa','codigo_pedido','status_pagamento','telefone_pagamento','metodo_pagamento','referencia_pagamento','local_entrega','itens','idioma'];
-      const missing=[];
-      const base=await db.from('pedidos').select(required.join(',')).eq('restaurante_id',rid).limit(1);
-      out.orderSchema=!base.error;
-      if(base.error){out.errors.push('pedidos: '+base.error.message);return;}
-      out.details.orderOptional={};
-      for(const col of optional){
-        const r=await db.from('pedidos').select(col).eq('restaurante_id',rid).limit(1);
-        out.details.orderOptional[col]=!r.error;
-        if(r.error) missing.push(col);
-      }
-      out.details.missingOptionalOrderColumns=missing;
-      if(missing.length) out.errors.push('Campos opcionais ausentes em pedidos: '+missing.join(', '));
-    });
-    out.ok=out.connection&&out.restaurant&&out.products&&out.translations&&out.mesas&&out.qrs&&out.mesaQrIntegrity&&out.orderSchema&&(!out.errors.some(e=>e.startsWith('Supabase:')||e.startsWith('Restaurantes:')||e.startsWith('Produtos:')||e.startsWith('Traduções:')||e.startsWith('Mesas:')||e.startsWith('QR Codes:')||e.startsWith('Pedidos:')));
+    const client=window.prodebaSB;
+    const out={ok:false,connection:false,restaurants:false,products:false,translations:false,qrRpc:false,trackingRpc:false,errors:[]};
+    if(!client){out.errors.push('Cliente Supabase não encontrado.');return out;}
+    const check=async(name,fn)=>{try{await fn();}catch(e){out.errors.push(name+': '+(e?.message||String(e)));}};
+    await check('Ligação',async()=>{const r=await client.from('restaurantes').select('id').limit(1);if(r.error)throw r.error;out.connection=true;out.restaurants=true;});
+    await check('Produtos públicos',async()=>{const r=await client.from('produtos').select('id').limit(1);if(r.error)throw r.error;out.products=true;});
+    await check('Traduções públicas',async()=>{const r=await client.from('traducoes_produtos').select('id').limit(1);if(r.error)throw r.error;out.translations=true;});
+    await check('Resolver QR',async()=>{const r=await client.rpc('resolver_qr',{p_token:'__prodeba_qa_invalid__'});if(r.error)throw r.error;out.qrRpc=true;});
+    await check('Rastrear pedido',async()=>{const r=await client.rpc('rastrear_pedido',{p_codigo:'__prodeba_qa_invalid__'});if(r.error)throw r.error;out.trackingRpc=true;});
+    out.ok=out.connection&&out.products&&out.translations&&out.qrRpc&&out.trackingRpc;
     return out;
   }
   if(new URLSearchParams(location.search).get('prodeba_test')==='1'){
-    document.addEventListener('DOMContentLoaded',async()=>{ const r=await runQA(); const box=document.createElement('pre'); box.id='prodeba-qa-result'; box.style='position:fixed;inset:10px;z-index:99999;background:#fff;border:2px solid #111827;border-radius:14px;padding:16px;overflow:auto;white-space:pre-wrap;font:13px monospace'; box.textContent='PRODEBA QA\n'+JSON.stringify(r,null,2); document.body.appendChild(box); });
+    document.addEventListener('DOMContentLoaded',async()=>{
+      const result=await runQA();
+      const box=document.createElement('pre');
+      box.id='prodeba-qa-result';
+      box.style='position:fixed;inset:10px;z-index:99999;background:#fff;border:2px solid #111827;border-radius:14px;padding:16px;overflow:auto;white-space:pre-wrap;font:13px monospace';
+      box.textContent='PRODEBA QA\\n'+JSON.stringify(result,null,2);
+      document.body.appendChild(box);
+    });
   }
 })();
+</script>
+
 </script>
 </body>
 </html>
