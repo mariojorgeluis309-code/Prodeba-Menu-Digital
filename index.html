@@ -2251,11 +2251,13 @@
   // API pública para o checkout existente.
   window.ProdebaModulo = {
     getContext() {
+      const ctx=window.PRODEBA_QR_CONTEXT;
+      const valid=!!(ctx && ctx.restauranteId && String(ctx.restauranteId)===String(RESTAURANT_ID));
       return {
         restauranteId: RESTAURANT_ID,
-        mesaId: localStorage.getItem(CFG.storage.table) || null,
-        mesaNumero: localStorage.getItem('prodeba_mesa_numero') || null,
-        qrToken: localStorage.getItem(CFG.storage.qrToken) || null
+        mesaId: valid ? (ctx.mesaId || null) : null,
+        mesaNumero: valid ? (ctx.row?.numero || ctx.row?.nome || null) : null,
+        qrToken: valid ? (ctx.token || null) : null
       };
     },
 
