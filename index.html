@@ -660,6 +660,7 @@
       restauranteAtual: null,
       mesaAtual: getParam(["mesa", "table"]),
       qrRestaurantId: getParam(["restaurante", "restaurant", "restaurante_id", "restaurant_id"]),
+      qrMesaId: null,
       carrinho: [],
       pagamento: "delivery",
       metodosPagamento: [],
@@ -1011,6 +1012,10 @@
     async function openRestaurant(id){
       const restaurant = state.restaurantes.find(r=>text(pick(r,["id","restaurante_id","restaurant_id"])) === text(id));
       if(!restaurant) return;
+      if(text(id)!==text(state.qrRestaurantId)){
+        state.qrMesaId=null;state.mesaAtual=null;
+        localStorage.removeItem("prodeba_mesa_id");localStorage.removeItem("prodeba_mesa_numero");
+      }
       state.restauranteAtual=restaurant;
       state.carrinho=[];
       saveCart();
@@ -1220,8 +1225,8 @@
         const nome=document.getElementById("clienteNome").value.trim();
         const telefone=document.getElementById("clienteTelefone").value.trim();
         const local=document.getElementById("localEntrega").value.trim();
-        const mesaId=localStorage.getItem("prodeba_mesa_id")||"";
-        const mesaNumero=localStorage.getItem("prodeba_mesa_numero")||state.mesaAtual||document.getElementById("mesaPedido").value.trim();
+        const mesaId=state.qrMesaId||"";
+        const mesaNumero=state.qrMesaId?(state.mesaAtual||document.getElementById("mesaPedido").value.trim()):"";
         const ref=document.getElementById("referenciaPagamento").value.trim();
         const telPagamento=document.getElementById("telefonePagamento").value.trim()||telefone;
         const method=(state.metodosPagamento||[]).find(m=>text(m.tipo||m.nome)===text(state.pagamento));
@@ -1484,6 +1489,7 @@
         if(!resolved.error&&resolved.data){
           state.qrRestaurantId=resolved.data.restaurante_id||null;
           state.mesaAtual=resolved.data.numero?String(resolved.data.numero):null;
+          state.qrMesaId=resolved.data.mesa_id||null;
           if(state.qrRestaurantId) localStorage.setItem("prodeba_restaurante_id",state.qrRestaurantId);
           localStorage.setItem("prodeba_qr_token",qrToken);
           if(resolved.data.mesa_id) localStorage.setItem("prodeba_mesa_id",resolved.data.mesa_id);
@@ -2341,7 +2347,7 @@
       const box=document.createElement('pre');
       box.id='prodeba-qa-result';
       box.style='position:fixed;inset:10px;z-index:99999;background:#fff;border:2px solid #111827;border-radius:14px;padding:16px;overflow:auto;white-space:pre-wrap;font:13px monospace';
-      box.textContent='PRODEBA QA\\n'+JSON.stringify(result,null,2);
+      box.textContent='PRODEBA QA\n'+JSON.stringify(result,null,2);
       document.body.appendChild(box);
     });
   }
