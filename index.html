@@ -419,7 +419,7 @@
     const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     const PAYMENT_ACCOUNTS_DEFAULT = {
-      mpesa: { numero: "845883111", titular: "Mário Jorge Luís" },
+      mpesa: { numero: "", titular: "" },
       emola: { numero: "", titular: "" },
       mkesh: { numero: "", titular: "" }
     };
@@ -664,7 +664,8 @@
       mesaAtual: getParam(["mesa", "table"]),
       qrRestaurantId: getParam(["restaurante", "restaurant", "restaurante_id", "restaurant_id"]),
       carrinho: [],
-      pagamento: "mpesa",
+      pagamento: "delivery",
+      metodosPagamento: [],
       pedidoAtual: null,
       trackingTimer: null,
       userLocation: null,
@@ -1193,18 +1194,19 @@
       return out;
     }
 
-    function renderPaymentOptions(){
-      const r=state.restauranteAtual || {};
-      const accounts=paymentAccountsForRestaurant(r);
-      const methods=[
-        {id:"mpesa",title:tr("paymentNames").mpesa || "M-Pesa",subtitle:accounts.mpesa.numero?`${accounts.mpesa.numero} • ${accounts.mpesa.titular||""}`:tr("paymentNotConfigured")},
-        {id:"emola",title:tr("paymentNames").emola || "e-Mola",subtitle:accounts.emola.numero?`${accounts.emola.numero} • ${accounts.emola.titular||""}`:tr("paymentNotConfigured")},
-        {id:"mkesh",title:tr("paymentNames").mkesh || "mKesh",subtitle:accounts.mkesh.numero?`${accounts.mkesh.numero} • ${accounts.mkesh.titular||""}`:tr("paymentNotConfigured")},
-        {id:"bank",title:tr("paymentNames").bank || "Transferência bancária",subtitle:accounts.bank.banco?`${accounts.bank.banco}${accounts.bank.conta?` • ${accounts.bank.conta}`:""}`:tr("bankData")},
-        {id:"card",title:tr("paymentNames").card || "Visa / Mastercard",subtitle:tr("cardSubtitle")},
-        {id:"delivery",title:tr("paymentNames").delivery || tr("delivery"),subtitle:tr("payDelivery")}
-      ];
-      document.getElementById("paymentOptions").innerHTML=methods.map(m=>`<button type="button" class="payment-option ${state.pagamento===m.id?'active':''}" data-payment="${m.id}"><strong>${escapeHTML(m.title)}</strong><span class="meta">${escapeHTML(m.subtitle)}</span></button>`).join("");
+    async function renderPaymentOptions(){
+      const rid=text(pick(state.restauranteAtual,["id","restaurante_id","restaurant_id"]));
+      const response=await db.from("metodos_pagamento").select("*").eq("restaurante_id",rid).eq("ativo",true).order("nome");
+      if(response.error) throw response.error;
+      state.metodosPagamento=response.data||[];
+      const methods=state.metodosPagamento.map(m=>({
+        id:text(m.tipo||m.nome),
+        title:m.nome||m.tipo,
+        subtitle:[m.numero,m.titular,m.banco,m.conta].filter(Boolean).join(" • ") || tr("paymentNotConfigured")
+      }));
+      methods.push({id:"delivery",title:tr("paymentNames").delivery||tr("delivery"),subtitle:tr("payDelivery")});
+      if(!methods.some(m=>m.id===state.pagamento)) state.pagamento=methods[0]?.id||"delivery";
+      document.getElementById("paymentOptions").innerHTML=methods.map(m=>'<button type="button" class="payment-option '+(state.pagamento===m.id?'active':'')+'" data-payment="'+escapeHTML(m.id)+'"><strong>'+escapeHTML(m.title)+'</strong><span class="meta">'+escapeHTML(m.subtitle)+'</span></button>').join("");
       document.querySelectorAll("[data-payment]").forEach(btn=>btn.addEventListener("click",()=>{state.pagamento=btn.dataset.payment;renderPaymentOptions();renderPaymentInfo();}));
       renderPaymentInfo();
     }
@@ -1212,15 +1214,17 @@
     function renderPaymentInfo(){
       const box=document.getElementById("paymentInfo");
       const extra=document.getElementById("paymentExtraFields");
-      const accounts=paymentAccountsForRestaurant(state.restauranteAtual||{});
       const p=state.pagamento;
-      extra.classList.toggle("hidden",p==="delivery" || p==="card");
-      if(p==="mpesa") box.innerHTML=`<strong>${escapeHTML(tPaymentName("mpesa"))}</strong><br>${escapeHTML(tr("sendTo"))} <strong>${escapeHTML(accounts.mpesa.numero||tr("paymentNotConfigured"))}</strong> ${escapeHTML(tr("inNameOf"))} <strong>${escapeHTML(accounts.mpesa.titular||"")}</strong>. ${escapeHTML(tr("thenReference"))}`;
-      else if(p==="emola") box.innerHTML=`<strong>${escapeHTML(tPaymentName("emola"))}</strong><br>${escapeHTML(tr("sendTo"))} <strong>${escapeHTML(accounts.emola.numero||tr("paymentNotConfigured"))}</strong> ${escapeHTML(tr("inNameOf"))} <strong>${escapeHTML(accounts.emola.titular||"")}</strong>. ${escapeHTML(tr("thenReference"))}`;
-      else if(p==="mkesh") box.innerHTML=`<strong>${escapeHTML(tPaymentName("mkesh"))}</strong><br>${escapeHTML(tr("sendTo"))} <strong>${escapeHTML(accounts.mkesh.numero||tr("paymentNotConfigured"))}</strong> ${escapeHTML(tr("inNameOf"))} <strong>${escapeHTML(accounts.mkesh.titular||"")}</strong>. ${escapeHTML(tr("thenReference"))}`;
-      else if(p==="bank") box.innerHTML=`<strong>${escapeHTML(tPaymentName("bank"))}</strong><br>Banco: <strong>${escapeHTML(accounts.bank.banco||tr("paymentNotConfigured"))}</strong><br>Conta: <strong>${escapeHTML(accounts.bank.conta||tr("paymentNotConfigured"))}</strong><br>Titular: <strong>${escapeHTML(accounts.bank.titular||tr("paymentNotConfigured"))}</strong><br><span class="meta">${escapeHTML(tr("transferConfirmed"))}</span>`;
-      else if(p==="card") box.innerHTML=`<strong>${escapeHTML(tPaymentName("card"))}</strong><br>${escapeHTML(tr("cardGateway"))}`;
-      else box.innerHTML=`<strong>${escapeHTML(tr("paymentNames").delivery || tr("delivery"))}</strong><br>${escapeHTML(tr("payDelivery"))}. ${escapeHTML(tr("payStateSeparate"))}`;
+      const method=(state.metodosPagamento||[]).find(m=>text(m.tipo||m.nome)===text(p));
+      const isDelivery=p==="delivery" || p==="dinheiro" || p==="cash";
+      extra.classList.toggle("hidden",isDelivery || p==="cartao" || p==="visa" || p==="mastercard");
+      if(isDelivery) box.textContent=tr("payDelivery");
+      else if(method){
+        const details=[method.numero,method.titular,method.banco,method.conta,method.nib].filter(Boolean).join(" • ");
+        box.textContent=(method.nome||method.tipo)+ (details?" — "+details:"")+". "+tr("thenReference");
+      }else{
+        box.textContent="Método de pagamento não configurado para este restaurante.";
+      }
     }
 
     function openModal(id){document.getElementById(id).classList.remove("hidden");document.getElementById(id).setAttribute("aria-hidden","false");}
@@ -1233,96 +1237,55 @@
       closeModal("modalCarrinho");
       document.getElementById("checkoutTotal").textContent=money(cartTotal());
       document.getElementById("mesaPedido").value=state.mesaAtual||"";
-      renderPaymentOptions();
+      await renderPaymentOptions();
       openModal("modalCheckout");
     }
 
     async function submitOrder(event){
       event.preventDefault();
-      const btn=event.submitter;
+      const btn=event.submitter || document.querySelector('#checkoutForm button[type="submit"]');
       if(!state.restauranteAtual){setNotice("checkoutNotice",tr("selectRestaurant"),"error");return;}
       if(!state.carrinho.length){setNotice("checkoutNotice",tr("emptyCart"),"warning");return;}
-      btn.disabled=true;
-      btn.textContent=tr("sending");
-      const total=cartTotal();
-      const rid=text(pick(state.restauranteAtual,["id","restaurante_id","restaurant_id"]));
-      const nome=document.getElementById("clienteNome").value.trim();
-      const telefone=document.getElementById("clienteTelefone").value.trim();
-      const local=document.getElementById("localEntrega").value.trim();
-      const mesaId=localStorage.getItem("prodeba_mesa_id") || "";
-      const mesaNumero=localStorage.getItem("prodeba_mesa_numero") || state.mesaAtual || document.getElementById("mesaPedido").value.trim();
-      const ref=document.getElementById("referenciaPagamento").value.trim();
-      const telPagamento=document.getElementById("telefonePagamento").value.trim();
-      const code=`PRO-${Math.random().toString(36).slice(2,8).toUpperCase()}${Date.now().toString(36).slice(-3).toUpperCase()}`;
-      const items=cartDetails().map(i=>({
-        produto_id:i.productId,
-        nome:i.name,
-        quantidade:i.qty,
-        preco:i.price,
-        subtotal:i.lineTotal
-      }));
-
-      const payload={
-        restaurante_id:rid,
-        nome_cliente:nome,
-        telefone,
-        local_entrega:local,
-        mesa:mesaNumero,
-        mesa_id:mesaId || null,
-        metodo_pagamento:state.pagamento,
-        telefone_pagamento:telPagamento,
-        referencia_pagamento:ref,
-        total,
-        status:state.pagamento==="delivery" ? "pendente" : "aguardando_pagamento",
-        status_pagamento:state.pagamento==="delivery"?"na_entrega":"pendente",
-        itens:items,
-        idioma:state.idioma,
-        codigo_pedido:code
-      };
-
-      const result=await insertPedidoAdaptive(payload);
-      if(result.error){
-        console.error(result.error);
-        setNotice("checkoutNotice",`${escapeHTML(tr("sendOrderError"))}: ${escapeHTML(result.error.message)}`,"error");
-        btn.disabled=false;btn.textContent=tr("sendOrder");return;
+      if(!btn) return;
+      btn.disabled=true; btn.textContent=tr("sending");
+      try{
+        const rid=text(pick(state.restauranteAtual,["id","restaurante_id","restaurant_id"]));
+        const nome=document.getElementById("clienteNome").value.trim();
+        const telefone=document.getElementById("clienteTelefone").value.trim();
+        const local=document.getElementById("localEntrega").value.trim();
+        const mesaId=localStorage.getItem("prodeba_mesa_id")||"";
+        const mesaNumero=localStorage.getItem("prodeba_mesa_numero")||state.mesaAtual||document.getElementById("mesaPedido").value.trim();
+        const ref=document.getElementById("referenciaPagamento").value.trim();
+        const telPagamento=document.getElementById("telefonePagamento").value.trim()||telefone;
+        const method=(state.metodosPagamento||[]).find(m=>text(m.tipo||m.nome)===text(state.pagamento));
+        if(state.pagamento!=="delivery" && !method){throw new Error("Este método de pagamento ainda não está configurado pelo restaurante.");}
+        const isCash=state.pagamento==="delivery"||state.pagamento==="dinheiro"||state.pagamento==="cash";
+        if(!isCash && !ref && !["visa","mastercard","cartao"].includes(state.pagamento)){throw new Error("Indique a referência do pagamento.");}
+        const orderLocation=local||(mesaNumero?"Mesa "+mesaNumero:"Retirada no estabelecimento");
+        const orderItems=cartDetails().map(i=>({produto_id:i.productId,quantidade:i.qty}));
+        const token=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():"prodeba-"+Date.now()+"-"+Math.random().toString(36).slice(2);
+        const mesaUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mesaId)?mesaId:null;
+        const {data,error}=await db.rpc("criar_pedido_transacional",{
+          strict_mesa_id:mesaUuid,
+          itens:{pedido:{restaurante_id:rid,nome_cliente:nome,telefone_pagamento:telPagamento,local_entrega:orderLocation,referencia_pagamento:ref},itens:orderItems},
+          pagamento:{metodo:state.pagamento,valor:cartTotal(),referencia_externa:ref},
+          idempotency_token:token
+        });
+        if(error) throw error;
+        const order=Array.isArray(data)?data[0]:data;
+        if(!order) throw new Error("O servidor não devolveu os dados do pedido.");
+        const code=pick(order,["codigo","codigo_pedido"],"");
+        state.pedidoAtual={codigo:code,status:order.status||"pendente",total:order.total,status_pagamento:"pendente",created_at:order.created_at};
+        state.carrinho=[];saveCart();renderCart();
+        closeModal("modalCheckout");showTrackingResult(state.pedidoAtual);showView("tracking");
+        setNotice("globalNotice",escapeHTML(tr("orderSent"))+" Código: <strong>"+escapeHTML(code)+"</strong>","success");
+        startTrackingAutoRefresh(code);
+      }catch(error){
+        console.error("[Prodeba] checkout:",error);
+        setNotice("checkoutNotice",escapeHTML(tr("sendOrderError"))+": "+escapeHTML(error.message||"Erro desconhecido"),"error");
+      }finally{
+        btn.disabled=false;btn.textContent=tr("sendOrder");
       }
-      const order=result.data?.[0] || result.data || {};
-      state.pedidoAtual={...order,codigo_pedido:pick(order,["codigo_pedido","codigo","code"],code)};
-      state.carrinho=[];saveCart();renderCart();
-      closeModal("modalCheckout");
-      showTrackingResult(state.pedidoAtual);
-      showView("tracking");
-      setNotice("globalNotice",`${escapeHTML(tr("orderSent"))} Código: <strong>${escapeHTML(pick(state.pedidoAtual,["codigo_pedido"],code))}</strong>`,"success");
-      startTrackingAutoRefresh(pick(state.pedidoAtual,["codigo_pedido","id"],code));
-      btn.disabled=false;btn.textContent=tr("sendOrder");
-    }
-
-    async function insertPedidoAdaptive(payload){
-      let body={...payload};
-      const optionalCandidates=["idioma","mesa","mesa_id","local_entrega","telefone_pagamento","referencia_pagamento","telefone","codigo_pedido","status_pagamento"];
-      for(let attempt=0;attempt<optionalCandidates.length+2;attempt++){
-        const {data,error}=await db.from("pedidos").insert(body).select("*").limit(1);
-        if(!error) return {data,error:null};
-        const field=parseUnknownColumn(error.message);
-        if(field && Object.prototype.hasOwnProperty.call(body,field)){
-          delete body[field];
-          continue;
-        }
-        const missing=parseNotNullColumn(error.message);
-        if(missing && !Object.prototype.hasOwnProperty.call(body,missing)){
-          const sourceMap={
-            cliente_nome:"nome_cliente",nome:"nome_cliente",customer_name:"nome_cliente",
-            customer_phone:"telefone",phone:"telefone",endereco:"local_entrega",local:"local_entrega",
-            pagamento:"metodo_pagamento",payment_method:"metodo_pagamento",amount:"total",valor_total:"total",
-            order_status:"status",items:"itens",pedido_codigo:"codigo_pedido",table_id:"mesa_id",mesa_id:"mesa_id"
-          };
-          if(sourceMap[missing] && payload[sourceMap[missing]]!==undefined) body[missing]=payload[sourceMap[missing]];
-          else return {data:null,error};
-          continue;
-        }
-        return {data:null,error};
-      }
-      return {data:null,error:new Error(tr("adaptOrderError"))};
     }
 
     function parseUnknownColumn(message){
@@ -1342,15 +1305,12 @@
     }
 
     async function fetchOrderByCode(code,showLoading=false){
-      if(showLoading) document.getElementById("trackingResult").innerHTML=`<div class="loading">${escapeHTML(tr("queryLoading"))}</div>`;
-      let response=await db.from("pedidos").select("*").eq("codigo_pedido",code).maybeSingle();
-      if(response.error){
-        response=await db.from("pedidos").select("*").eq("id",code).maybeSingle();
-      }
-      if(response.error || !response.data){showTrackingError(tr("notFound"));return null;}
-      state.pedidoAtual=response.data;
-      showTrackingResult(response.data);
-      return response.data;
+      if(showLoading) document.getElementById("trackingResult").innerHTML='<div class="loading">'+escapeHTML(tr("queryLoading"))+'</div>';
+      const {data,error}=await db.rpc("rastrear_pedido",{p_codigo:text(code).trim()});
+      if(error||!data){showTrackingError(tr("notFound"));return null;}
+      state.pedidoAtual=data;
+      showTrackingResult(data);
+      return data;
     }
 
     function showTrackingError(message){document.getElementById("trackingResult").innerHTML=`<div class="notice error">${escapeHTML(message)}</div>`;}
@@ -1551,15 +1511,28 @@
       setupEvents();
       setLanguage(state.idioma);
       document.getElementById("reportMonth").value=state.reportMonth;
-      await loadRestaurants();
-      if(state.qrRestaurantId){
-        const r=state.restaurantes.find(x=>text(pick(x,["id","restaurante_id","restaurant_id"]))===text(state.qrRestaurantId) || text(pick(x,["slug","codigo","codigo_restaurante","restaurant_slug"]))===text(state.qrRestaurantId));
-        if(r){
-          await openRestaurant(pick(r,["id","restaurante_id","restaurant_id"]));
+      const qrToken=getParam(["qr","qr_token","token"]);
+      if(qrToken){
+        const resolved=await db.rpc("resolver_qr",{p_token:qrToken});
+        if(!resolved.error&&resolved.data){
+          state.qrRestaurantId=resolved.data.restaurante_id||null;
+          state.mesaAtual=resolved.data.numero?String(resolved.data.numero):null;
+          if(state.qrRestaurantId) localStorage.setItem("prodeba_restaurante_id",state.qrRestaurantId);
+          localStorage.setItem("prodeba_qr_token",qrToken);
+          if(resolved.data.mesa_id) localStorage.setItem("prodeba_mesa_id",resolved.data.mesa_id);
+          else localStorage.removeItem("prodeba_mesa_id");
+          if(state.mesaAtual) localStorage.setItem("prodeba_mesa_numero",state.mesaAtual);
         }else{
-          setNotice("globalNotice",tr("qrNotFound"),"error");
+          console.warn("[Prodeba] QR inválido ou inativo:",resolved.error?.message||"não encontrado");
         }
       }
+      await loadRestaurants();
+      if(state.qrRestaurantId){
+        const r=state.restaurantes.find(x=>text(pick(x,["id","restaurante_id","restaurant_id"]))===text(state.qrRestaurantId));
+        if(r) await openRestaurant(state.qrRestaurantId);
+        else setNotice("globalNotice",tr("qrNotFound"),"error");
+      }
+
       const {data:{session}}=await db.auth.getSession();
       if(session){
         state.adminUser=session.user;
@@ -1709,49 +1682,28 @@
   async function resolveQrContext() {
     const url = new URL(location.href);
     let token = null;
-    for (const key of CFG.tableParamNames) {
-      token = url.searchParams.get(key);
-      if (token) break;
-    }
-
-    if (!token) {
-      const saved = localStorage.getItem(CFG.storage.qrToken);
-      if (saved) {
-        token = saved;
-      }
-    }
-
+    for (const key of CFG.tableParamNames) { token = url.searchParams.get(key); if (token) break; }
+    if (!token) token = localStorage.getItem(CFG.storage.qrToken);
     if (!token) return;
-
     try {
-      const data = await run(SB.from('qr_codes').select('*').eq('qr_token', token).limit(1));
-      const row = Array.isArray(data) ? data[0] : data;
-      if (!row) return;
-
-      const rid = field(row, ['restaurante_id', 'restaurant_id'], RESTAURANT_ID);
-      const mesa = field(row, ['mesa_id', 'table_id'], '');
-      if (rid) {
-        RESTAURANT_ID = rid;
-        localStorage.setItem(CFG.storage.restaurant, rid);
-      }
-      localStorage.setItem(CFG.storage.qrToken, token);
-      if (mesa !== '') {
-        localStorage.setItem(CFG.storage.table, String(mesa));
-        try {
-          const mesaData = await run(SB.from('mesas').select('*').eq('id', mesa).limit(1));
-          const mesaRow = Array.isArray(mesaData) ? mesaData[0] : mesaData;
-          const numero = field(mesaRow, ['numero','nome','name','mesa'], '');
-          if (numero !== '') localStorage.setItem('prodeba_mesa_numero', String(numero));
-          showTableBadge(numero || mesa, token);
-        } catch (_) { showTableBadge(mesa, token); }
-      } else {
+      const {data,error}=await SB.rpc('resolver_qr',{p_token:token});
+      if(error) throw error;
+      if(!data) throw new Error('QR não encontrado ou inativo.');
+      const rid=field(data,['restaurante_id'],null);
+      const mesa=field(data,['mesa_id'],null);
+      if(rid){RESTAURANT_ID=rid;localStorage.setItem(CFG.storage.restaurant,rid);}
+      localStorage.setItem(CFG.storage.qrToken,token);
+      if(mesa){
+        localStorage.setItem(CFG.storage.table,String(mesa));
+        const numero=field(data,['numero','nome'],mesa);
+        localStorage.setItem('prodeba_mesa_numero',String(numero));
+        showTableBadge(numero,token);
+      }else{
+        localStorage.removeItem(CFG.storage.table);
         localStorage.removeItem('prodeba_mesa_numero');
-        showTableBadge('', token);
       }
-      window.PRODEBA_QR_CONTEXT = { token, mesaId: mesa || null, restauranteId: rid || null, row };
-    } catch (e) {
-      console.warn('[Prodeba] QR não resolvido:', e.message);
-    }
+      window.PRODEBA_QR_CONTEXT={token,mesaId:mesa||null,restauranteId:rid||null,row:data};
+    }catch(e){console.warn('[Prodeba] QR não resolvido:',e.message);}
   }
 
   function showTableBadge(mesa, token) {
